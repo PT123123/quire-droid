@@ -153,6 +153,13 @@ worktree 里提交是干净的（只有一个 HEAD、只有你的改动）。**p
   `docs/DECISIONS.md`，brief §2.5）如果四个 track 都往里追加，提交前用「备份 → `sed -n
   '1,Np'` 裁到只含自己那段 → `git add` → 校验 `git diff --cached` 里没有别人的标记 →
   commit → 还原备份」这一套；还原后别人的未提交内容原样还在。
+- **plumbing 挪了 master，就得把共享 index 一起对齐**（2026-09-23 实测的坑）。
+  `update-ref` 只动 ref，`.git/index` 还停在旧 HEAD 上，于是这次提交里**新增**的那几个
+  文件在 `git status` 里显示成 `D `（已暂存的删除），工作树里那一份反倒成了 `??`——
+  下一个 track 一句 `git commit -a` 就把你的原始数据行从仓库里删掉。补法只碰自己的路径：
+  `git update-index --cacheinfo 100644,$(git rev-parse HEAD:<path>),<path>`（新文件要加
+  `--add`）。做完看两件事：`git status --porcelain` 里只剩别人原本的 ` M`，而
+  `git diff HEAD -- <共享文件>` 全是他们自己的行、`-` 行为 0。
 - ADR 号：四条 track 一律**追加在 `docs/DECISIONS.md` 末尾**（§2.4），只有整合者把收
   过来的 ADR 归位到文件头部。事实核对（2026-09-22）：这个文件是**降序**的（ADR-0001 在
   末尾），而 Track 1 的 0044–0050 六刀都直接落在头部第 5 行——`origin/master` 上的 0047
