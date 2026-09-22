@@ -447,6 +447,22 @@ First functional release: a local, single-file-database notes workspace.
   `<localappdata>` and `<user>` before those fields are JSON-escaped, in all four
   writers, and warns instead of staying quiet when an account name still reads as
   a whole path segment (ADR-0094)
+- `benchmarks/scripts/stress_ladder.ps1` measures past the matrix's 10 000-block
+  ceiling: 20 000 / 50 000 / 100 000 rows, a scroll at those sizes, a whole page
+  of pictures or of coloured code, a 500-page sidebar. It waits for a *settled*
+  idle rather than sampling two seconds after the window appears, publishes
+  `settle_wait_ms` / `settled`, samples peak working set through the run, names
+  which clock ended a process (`refused-to-exit` vs `harness-grace`), and stamps
+  every row with the exe hash it ran against and the app's own `dump-state`
+  identity. `-Only` throws on a filter that matched nothing
+- `benchmarks/scripts/redact.ps1` now matches its prefix rules on either
+  separator. A caller that hands it a forward-slash path — which is what a
+  bash-style launch argument gives `stress_ladder.ps1` — used to fall through
+  the `<temp>` rule and get caught only by the account-name fallback, so the
+  row read `C:/Users/<user>/AppData/Local/…` and looked scrubbed while naming
+  the machine. The 18 `exe` fields of
+  `benchmarks/results/2026-09-23-stress-ladder-vg-r2.jsonl` are rewritten to
+  `<temp>/…`
 - A test that needs a folder — a database, a log family, an attachments
   directory — gets one from `quire::testing::ScratchDir`, which deletes it when
   the test ends. Each helper used to create a uniquely named `%TEMP%` directory

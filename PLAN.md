@@ -3359,3 +3359,71 @@ E 盘的另一个 home 被兜底规则洗成 `Users\<user>`；`profile_bench.ps1
 那一行源码再 Invoke-Expression** 求值的（不是抄一份），它带着 `<repo>` 且 `exe_bytes` 仍是真实的
 27 847 168。有一处误报要说清：按「账号名作为子串」判会命中 1 行，那是英文单词里偶然含到的三个
 字母，不是路径；所以真正的判据是上面那两条不依赖账号名的（drive 前缀 + `Users\`）。
+
+## 压测 · 阶梯推到矩阵之外，而一支量具先修了它自己的谎（2026-09-23，on `master`，无新 ADR：测量刀）
+
+**这一刀不做机制，做三件事：把树压到断、把断的形状钉住、把本文件此前一句错的收回来。**
+
+1. **身份先于数字。** 树是脏的（M9 那摊未提交，`docs/PERFORMANCE.md` 末尾就是他们那节），
+   所以全批次锁在一枚二进制上：`target/release/quire.exe` SHA-256 `57c105e6…cf7fda4c`、
+   `quire-typing.exe` `9e9fa909…a31f`，跑完复算未变。为防并行 `cargo build` 把路径下的 exe
+   重链，阶梯与诊断臂都跑 `%TEMP%\quire-bench-57c105e6\quire.exe` 那份逐字节副本；
+   每一行自己吐 exe 哈希和 app 自己的 `dump-state: pages=… gs+atlas-blocks=… coloured=…`，
+   诊断批次末尾一句 `arms=5 unproven=0`。
+   写入侧在提交前被抓到一次：`redact.ps1` 的前缀规则只认反斜杠，而阶梯拿到的 `$Exe` 是正斜杠，
+   于是 `<temp>` 规则整个漏过、只剩账号名那条兜底，行里留下 `C:/Users/<user>/AppData/…` 这种
+   「看着已经洗过、其实还在点名这台机器」的路径。规则改成分段转义后用 `[/\]` 重连（两种分隔符
+   都认），r2 那 18 行 `exe` 一并改回 `<temp>/…`。ADR-0094 那个洞的下一个同类。
+2. **矩阵复跑（30 行，全 exit 0）**：A 129.6 / 102.6 MB，D10000 151.4 / 124.6，Flick 100.9 % CPU，
+   打字 29.68 / 29.0 / 29.81（请求 30）、117.17（请求 120），handler 中位 90 / 140 / 82 µs。
+   对 M7 全线 +13…36 %，但**能免疫会话漂移的那个比值越线了**：同场次内 D − A = +21.8 MB WS /
+   **+22.0 MB private**，M7 是 +7.2 / +9.2，09-21 是 +10 / +12.5 —— D÷A 的 private **1.214×**，
+   门槛 1.2×。每行成本自 09-21 起大约翻倍，这是 §六 那条 memory-delta 从 ✓ 改回来的原因；
+   归因**没做**，写成了 bisect 待办而不是指控。
+3. **新量具 `benchmarks/scripts/stress_ladder.ps1`。** 矩阵的 15 s 窗口 / 60 s 退出钟在 10 000 行
+   以上正好把发现吃掉：晚到的窗口本身就是结论，而被杀掉的进程把解释它的那个数一起带走。
+   阶梯换宽钟、采样峰值 WS、加 `settle_wait_ms` / `settled`（「空转」= 进程自己安静下来，
+   并且把等了多久公布出来），退出码分成 `0` / `harness-grace` / `refused-to-exit`，`-Only`
+   零命中就抛。9 臂 × 2 趟 = 18 行，无 hung、无 exited_early。50 000 行装载 1 186 ms、
+   12.9 s 安静到 0.57 % / 198 MB；100 000 行 260.8 MB、49.8 s；500 页侧栏切换 132.3 MB / 0.39 % / exit 0。
+4. **撤回一句本会话早上写下的话。** 「20 000 行以上的页面永不空转（50k 40.7–50.2 %、100k
+   95.4–97.9 %，而 20k 只有 0.19 %——那条斜率看着就像机制）」
+   **是量具的伪影**：8 s 采样落在窗口出现后 2 s，也就是正卡在首次写回里。同一枚二进制、同一个页面，
+   改成每 2 s 一采样（`.scratch/idle_out.txt`）：CPU 顶到 t≈43 s，t≈47 s 归 0，之后 135 s 一直 0.0–0.8 % /
+   236 MB 平。留下不退的那半：**S100000-seed**（`settled: false`、95.12 %、`refused-to-exit`）是全新库
+   上第一次写回，90 s 内真的没写完——这是一个「不该有人到的尺寸」上的真代价，如实记着。
+5. **两个断掉的形状，各带自己的对照。**
+   - **每一行都是图的页面**（`--pictures == --blocks` ⇒ `bench_picture_plan` 的 stride = 1）无界增长：
+     101 s 到 3 099 MB 还在爬（≈+30 MB/s），早前两趟 4.4 GB / 90 s 空转、6.5 GB / 120 s 滚动。
+     三臂把它们夹死：A（10 000 行 / 5 000 图，stride 2）166 MB 平、exit 0；B（10 000 / 10 000，stride 1）
+     3 099 MB 不退出；B2（20 000 行 / **同样 10 000 个图行**，stride 2）180 MB 平、t≈56 s 起安静。
+     ⇒ **不是图行数量，是那个「整页无一行非图」的形状**；也不是解码缓存（32 MiB 上限和九帧天花板在
+     本文件每个媒体臂上都照常生效，这里数据库一直是 4 KB，而缓存报告压根没打印——进程没活到打印它的那
+     个回调）。**没认领原因**，只写了两个各值一小时的可疑处（Slint 自己的 path/texture 缓存；每格都是
+     image delegate 时的重新 realize）。
+   - **10 000 行带高亮的 code 页 + 滚动**：空转完全免费（4.8 / 5.4 s 安静、0.00 / 0.58 %、139.7 MB、
+     干净退出），一滚就是 92.35 / 98.50 % 占用一核、WS **平**（142.7 → 143.6 MB，不是泄漏，是纯重画），
+     并且**两趟都没跑到自己的 `--auto-exit`**；100 s 复核里 CPU 全程 82–101 %。对照是同场次同形状、
+     只差 `--code` 的 D 臂：普通文本页同样 200 px  flick，走了 1 639 836 px 之后 **t=82 s 自己 exit 0**。
+     ⇒ 不是滚动，不是页长，是「高亮 code 行 × 视口在动」。副作用记两条：事件循环忙到不吃 `slint::Timer`
+     意味着用户点关闭时只能被杀；ADR-0042 那句「上色无每行成本」仍然成立，因为门槛只量空转，
+     而门槛不滚带标记的行。
+
+**没测的（诚实）**：① 数据层那批 `#[ignore]` 探针**这次跑了但作废不发布**——它们与一条阶梯臂同场
+竞争，同一批探针对照记录读了 3.5–15 倍（rollup 窗口中位 114.6 ms vs 记录 28.5 ms；1 000 孤儿回收
+8 815 ms vs 550 ms），只有 §三十九 真正在乎的比值活了下来（窗口/全表 3.58× vs 3.12×）。欠一次干净
+复跑，而且它现在还是另一个问题：数据层已搬进锁 rev 的 `quire-core`，09-22 那些行本就不是同一份代码。
+② 全程 FemtoVG，阶梯从没在 skia 上跑过，而 defect A 完全可能是只有 FemtoVG 才有的纹理缓存行为——
+这是该跑的理由，不是结论。③ 夹具是 1280×720 渐变，最便宜的解码，所以媒体数字是地板。
+④ 帧与卡顿仍然看不见（harness 量 CPU/私有字节/`scroll_y`），§六 那句「no hitching observed」还是欠
+一次人手滚动。⑤ `--code` 未过 10 000、`--pictures` 未试 1 000–9 999、图不在 stride 上的真实页面未测。
+
+**改动清单**：新增 `benchmarks/scripts/stress_ladder.ps1`；新增原始行
+`benchmarks/results/2026-09-23-m14-matrix-vg.jsonl`（30）、`…-stress-ladder-vg-r2.jsonl`（18；
+r1 那 18 行是换 settle 之前的旧词汇，留着不改，`exit_code` 词表不同）；文档落
+`docs/PERFORMANCE.md`（§"Stress · the ladder past the matrix"、Method 一段、M7 follow-ups 重排、
+§六 memory-delta 改回未达标）、`docs/ROADMAP.md`（M7 行）、`CHANGELOG.md`（Build & test）；
+`benchmarks/scripts/redact.ps1` 改的是上面那条分隔符规则。
+`benchmarks/scripts/audit_results.ps1` 复跑绿（12 first-paint + 28 bench）。诊断脚本留在 `.scratch/`
+（`diag_size2.ps1`、`diag_final.ps1`、`idle_out.txt`、`leak_out.txt`、`step_out.txt`、`density_out.txt`、
+`probes_out.txt`），它们是上面每条断言的证据路径，不进清单。

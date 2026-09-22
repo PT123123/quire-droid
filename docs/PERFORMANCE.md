@@ -21,6 +21,10 @@ Idle scenes use `--auto-exit N`; no mouse/keyboard input during sampling.
 Scene E (`-Typing`) is not idle: `quire-typing` drives the editor through
 the same property/callback path a real keystroke uses, and samples the
 single-threaded latencies itself.
+Past 10 000 rows use `benchmarks/scripts/stress_ladder.ps1` instead: wider
+window/exit clocks, a high-water memory sample, and a `settle` wait — idle
+means *the process went quiet*, and the row publishes how long that took
+rather than assuming a sample two seconds after the window is one.
 GPU-side memory is *not* Working Set; when it matters we record it from
 Task Manager's "GPU Memory" column / pdh counters and say so.
 
@@ -257,7 +261,7 @@ skia run showed WS 320.9 MB, a one-off worth watching, see follow-ups.)
 |-----------|--------|
 | startup fast | ✓ warm starts 73–400 ms across all scenes (one 984 ms skia outlier, disk noise) |
 | idle CPU ≈ 0 | ✓ 0.58% vg / 0.98% sk of one core, no animation loops |
-| 10 000-block memory delta | ✓ +9 MB private over the empty shell (vg) / +9 MB (sk) — single digits, met |
+| 10 000-block memory delta | ✗ **not met on the 2026-09-23 re-read.** Was: ✓ +9 MB private over the empty shell (vg) / +9 MB (sk) — single digits, met. Now +22.0 MB private / +21.8 MB WS over the shell *in one session*, i.e. 1.214× on the private ratio against a ≤1.2× gate. The level is up with session drift; the slope is not, which is why this row changed. See follow-up 5 and ***Stress · the ladder past the matrix*** |
 | typing smoothness | ✓ 30 keystrokes/s sustained at 1k and 10k blocks, zero dropped; key handler median 47–66 µs, p95 ≤ 122 µs; 120 keystrokes/s also holds (118/s achieved) |
 | scrolling smoothness | ⚠ re-derive before quoting — "continuous scroll of a 10 000-block page: 27.7% (vg) / 18.2% (sk) of one core, no hitching observed" was measured on a scene F that never scrolled (see the M2 reading above and the media batch at the end): both arms are a pinned-at-top repaint loop. Re-derived 2026-09-21 on the fixed scene, both renderers, one sitting: **36.9–43.1 % (vg) / 31.8–33.7 % (skia/GL)** at a wheel tick, 86.1–87.4 / 66.4–70.3 at a flick — the harness measures CPU, not frames, so "no hitching" was never something it could see, and that half of the row still needs a human scroll |
 | in-page search cost | ✓ FTS query median 0.5 ms @1k blocks, 1.7 ms @10k — sub-frame |
@@ -302,12 +306,29 @@ real scroll*** *at the end of this file.)*
    31.8–33.7 at a wheel tick and 86.1–87.4 / 66.4–70.3 at a flick, so the
    item is now "a 10 000-row page costs most of a core to flick on the default
    renderer" — a bigger number, same advice: revisit when real input data says
-   it hurts, and see the M10 scroll rows at the end.)*
+   it hurts, and see the M10 scroll rows at the end. 2026-09-23: the same
+   harness now reaches 50 000 rows, where a flick is 100.1–100.4 % of a core
+   and a wheel tick 80.6–98.7 %, and one content shape is worse than any page
+   length — 10 000 coloured code rows under a scroll hold 92.4–98.5 % with a
+   flat working set and stop servicing their own quit timer. Same advice,
+   less headroom; see* ***Stress · the ladder past the matrix***.)*
 3. **Scroll-to-hit for search/find**: still impossible on this Slint
    (delegates expose no geometry) — recheck per upgrade; the selection-
    based navigation ships meanwhile.
-4. Nothing else: every SPEC §六 target is met with headroom on the
-   default renderer.
+4. **A page where every row is a picture grows without bound** (2026-09-23):
+   3 099 MB and climbing at 101 s, while 10 000 image rows *spread over* 20 000
+   rows sit flat at 180 MB — so it is the stride-1 shape, not the count, and the
+   32 MiB decode cache is provably not what fails. Reproduction command in the
+   stress section.
+5. **The long-document gate's slope, not its level** (2026-09-23): D − A is
+   +21.8 MB WS / +22.0 MB private in one session against M7's +7.2 / +9.2, i.e.
+   1.214× D ÷ A on private where the line is 1.2×, and the per-row term has
+   roughly doubled since 2026-09-21. Unattributed — a bisect across the
+   09-21→09-23 range is the item, not a fix.
+6. Everything else on this list stands: the remaining SPEC §六 targets are met,
+   and met on a *quiet* reading for the first time, since the ladder's idle arms
+   now wait for the process to stop rather than sampling whatever it was doing
+   two seconds after the window.
 
 ## M8 · release profile audit (SPEC §二十四)
 
@@ -1970,3 +1991,257 @@ request names, and this fixture gives it exactly one to look at. D9's line above
 "the picker popup's own behaviour, which is UI that does not exist yet" — is the thing D10
 built; its pixels are on record (`docs/REPORT_TRACK3.md` §D10, 32 database scenes) and its
 keyboard is not.
+
+## Stress · the ladder past the matrix, and two pages the app does not survive (2026-09-23)
+
+The standing matrix stops at 10 000 blocks because that is what a product page is allowed
+to be. This batch asks the other question — where does the curve actually break — and
+found two places, plus a third claim of this file's that turned out to be a harness
+artefact and is retracted below.
+
+**Which binary.** `HEAD 699f9c3` with the M9 Android track's work uncommitted in the tree
+(`src/platform/mod.rs`, `main.rs`, `ui/*`, and the M9.pre section directly above this one),
+so these rows are a dirty-tree reading and are nobody's baseline but their own.
+`target/release/quire.exe` is SHA-256 `57c105e6…cf7fda4c` and `quire-typing.exe`
+`9e9fa909…a31f`; both re-hashed identical after the last run, and every ladder arm prints
+the hash it ran against. Because a concurrent `cargo build` can relink that path under a
+running batch, the ladder and the diagnostic arms ran against a byte-identical copy at
+`%TEMP%\quire-bench-57c105e6\quire.exe`. One machine, one sitting per batch, FemtoVG.
+
+**Witness rule.** Every arm has to name itself. The ladder and the diagnostic probe print
+the app's own `dump-state: pages=… gs+atlas-blocks=… marked=… coloured=…` line into the row,
+and the probe batch ends with `arms=5 unproven=0` — a count of arms that carried both their
+identity and their binary hash, which is how the retraction below could be checked instead
+of argued.
+
+### 1 · The standing matrix, re-run: everything is up, and the slope is the part that moved
+
+`benchmarks/scripts/bench_matrix.ps1`, 30 rows (every scene a fresh-DB seed pass plus a
+measured pass), all 30 exit 0. Raw: `benchmarks/results/2026-09-23-m14-matrix-vg.jsonl`.
+The × columns are this row against the M7 matrix row of the same name (2026-09-19,
+`3498618`+D12) — four days of milestones apart, so read them as drift, not as a
+diff. CPU% is a share of one core.
+
+| scene | CPU % | WS MB | private MB | M7 WS / priv | ×WS | ×priv |
+|-------|------:|------:|-----------:|-------------:|----:|------:|
+| A empty shell | 0.59 | 129.6 | 102.6 | 114.3 / 88.2 | 1.13 | 1.16 |
+| B100 | 0.39 | 134.9 | 108.6 | 112.3 / 88.2 | 1.20 | 1.23 |
+| B1000 | 0.59 | 132.2 | 106.0 | 113.0 / 89.5 | 1.17 | 1.18 |
+| C5000 | 1.56 | 141.6 | 115.2 | 117.7 / 93.8 | 1.20 | 1.23 |
+| D10000 | 0.59 | 151.4 | 124.6 | 121.5 / 97.4 | **1.25** | **1.28** |
+| F10000 wheel (8 px) | 51.51 | 162.1 | 133.3 | 128.1 / 98.2 | **1.27** | **1.36** |
+| F10000 flick (200 px) | 100.93 | 170.8 | 148.5 | — | — | — |
+| G100 page-switch | 4.10 | 129.9 | 102.3 | 115.2 / 88.4 | 1.13 | 1.16 |
+| E1000 typing 30/s | 30.24 | 140.4 | 107.5 | 121.5 / 90.2 | 1.16 | 1.19 |
+| E10000 typing 30/s | 39.61 | 154.3 | 121.8 | 128.3 / 96.7 | 1.20 | 1.26 |
+| E10000 typing, no search | 30.45 | 154.0 | 121.2 | — | — | — |
+| E10000 typing 120/s | 34.34 | 153.9 | 121.0 | 127.9 / 96.4 | 1.20 | 1.26 |
+
+**The gate crossed on the ratio that cannot be drift.** §三十七 prices a long document at
+≤1.2× the baseline. D10000 reads 1.25/1.28 against M7, which is the cross-band reading four
+sections have been watching carefully; but the empty shell is up 1.13/1.16 in the *same*
+session, so most of that is this machine today. The drift-immune number is the within-session
+slope: **D − A = +21.8 MB WS / +22.0 MB private**, against M7's +7.2 / +9.2 and the media
+batch's (2026-09-21) +10 / +12.5. D ÷ A in one sitting is **1.168 WS / 1.214 private** where
+M7's was 1.063 / 1.104. Per-row cost has roughly doubled since 2026-09-21, and it is the
+per-row term that the gate exists to catch. Nothing here says *which* slice bought it —
+everything between 09-21 and today is a candidate, and the database work (D8–D10) is the
+largest of them by diff size — so this is filed as an owed bisect, not as an accusation.
+The bench page's own identity says the growth is not new row *kinds*: `gs+atlas-blocks=10024`
+on every D arm, i.e. the 10 000 bench rows plus 24 mock ones.
+
+**Typing still holds.** 29.68 / 29.0 / 29.81 keystrokes/s against 30 requested, 117.17
+against 120, handler medians 90 / 140 / 82 µs, search medians 645 / 2061 / 1913 µs. M7's
+row was 47–66 µs and "sub-frame"; the handler has roughly doubled and is still two orders
+of magnitude inside a frame. The 140 µs median is on the page that also searches.
+
+**The media arms reproduce the ceiling exactly.** Same nine rasters, same 31.64 MB of
+33.55 MB budget as 2026-09-21, on a scroll that really moves (`scroll_y` −154 899 …
+−197 287 px in the window):
+
+| scene | CPU % | WS MB | private MB | rasters / cache | scroll_y px |
+|-------|------:|------:|-----------:|----------------:|------------:|
+| D10000 + 500 pictures, idle | 0.59 | 145.9 | 120.1 | 0 / 0 | 0 |
+| D10000 + 5 000 pictures, idle | 0.39 | 164.4 | 128.6 | 2 / 7.03 MB | 0 |
+| F10000 + 500 pictures, flick | 79.01 | 209.3 | 182.7 | 9 / 31.64 MB | −197 287 |
+| F10000 + 5 000 pictures, flick | 55.24 | 201.6 | 160.5 | 9 / 31.64 MB | −154 899 |
+| F1000 + 500 pictures, flick | 59.71 | 187.6 | 145.8 | 9 / 31.64 MB | −184 051 |
+
+"A picture costs nothing until it is on screen" survives intact (500 pictures on an
+unscrolled page are free; 5 000 hold two frames in cache). What moved is the shell under
+them, which is the same +20 MB as every other arm.
+
+### 2 · The ladder: `benchmarks/scripts/stress_ladder.ps1`
+
+A new script, because the matrix's clocks are wrong past 10 000 rows: it waits 15 s for a
+window and 60 s for an exit, and past that size a late window *is* the finding while a
+killed process throws away the number that explains it. The ladder widens both, samples
+the high-water working set through the run instead of only at the sample's end, and adds
+the one field a ladder really needs — see the retraction. Nine arms, seed pass plus
+measured pass, 18 rows, every row carrying its own `dump-state`. Raw:
+`benchmarks/results/2026-09-23-stress-ladder-vg-r2.jsonl`.
+
+`settle s` is how long the process took to fall under 5 % of a core for 3 s straight
+(cap 90 s), `settled` whether it ever did, and `CPU %` is then measured *after* that — for
+the idle arms. For the scroll arms there is nothing to wait for and the column is the
+sustained load over the 8 s window. `exit` is `0`, or which clock ended it:
+`refused-to-exit` (its own `--auto-exit` horizon passed with the process still alive) or
+`harness-grace` (the ladder stopped an arm it had already measured, because the app's timer
+was parked past the settle window). `-Only` filters, and throws on a match of zero.
+
+| arm | up ms | settle s | settled | CPU % | WS MB | private MB | peak WS MB | exit |
+|-----|------:|---------:|---------|------:|------:|-----------:|-----------:|------|
+| S20000-seed | 516 | 11.6 | true | 0.38 | 132.2 | 124.2 | 163.4 | harness-grace |
+| S20000 | 371 | 4.8 | true | 0.38 | 159.8 | 134.1 | 162.4 | harness-grace |
+| S50000-seed | 275 | 11.7 | true | 0.57 | 198.5 | 173.0 | 201.0 | harness-grace |
+| S50000 | 1186 | 12.9 | true | 0.57 | 198.5 | 173.3 | 201.2 | harness-grace |
+| S100000-seed | 350 | 90.1 | **false** | **95.12** | 137.0 | 135.3 | 136.9 | **refused-to-exit** |
+| S100000 | 1137 | 49.8 | true | 0.95 | 260.8 | 236.9 | 263.4 | harness-grace |
+| S50000-F wheel · seed | 651 | — | — | 98.74 | 106.7 | 88.5 | 103.0 | 0 |
+| S50000-F wheel | 435 | — | — | 80.58 | 220.0 | 191.8 | 220.0 | 0 |
+| S50000-F200 flick · seed | 263 | — | — | 100.38 | 225.8 | 204.1 | 225.9 | 0 |
+| S50000-F200 flick | 543 | — | — | 100.14 | 228.1 | 204.4 | 228.1 | 0 |
+| S10000-P20000-F200 flick · seed | 383 | — | — | 92.96 | 243.1 | 230.1 | 241.5 | **refused-to-exit** |
+| S10000-P20000-F200 flick | 188 | — | — | 97.95 | **695.2** | **691.6** | 693.0 | **refused-to-exit** |
+| S10000-C10000 idle · seed | 316 | 4.8 | true | 0.00 | 139.7 | 102.4 | 142.4 | harness-grace |
+| S10000-C10000 idle | 621 | 5.4 | true | 0.58 | 139.7 | 102.7 | 142.4 | harness-grace |
+| S10000-C10000-F200 flick · seed | 254 | — | — | 92.35 | 142.7 | 106.4 | 145.3 | **refused-to-exit** |
+| S10000-C10000-F200 flick | 949 | — | — | 98.50 | 143.6 | 108.4 | 148.3 | **refused-to-exit** |
+| SG500 page-switch · seed | 383 | — | — | 0.77 | 132.2 | 102.8 | 134.9 | 0 |
+| SG500 page-switch | 155 | — | — | 0.39 | 132.3 | 103.7 | 136.8 | 0 |
+
+Exit census: 6 × `0`, 7 × `harness-grace`, 5 × `refused-to-exit`; no `hung`, no
+`exited_early`, so nothing in this table is missing a number because a clock ran out early.
+
+**Sizes the product is not supposed to reach, and what they cost.** A 50 000-row page
+loads (1 186 ms) and, once its first write-back finishes, is quiet at 0.57 % of a core in
+198 MB. A 100 000-row page costs 260.8 MB and 49.8 s of settling on load, and 500-page
+sidebar switching costs nothing measurable (132.3 MB, 0.39 %, exit 0 — the same shell as
+scene A). Scrolling is where 50 000 rows stop being cheap: 80.6–100.4 % of a core
+(over 100 % because the flick wakes more than one thread), which is a redraw of the
+visible band plus whatever the ListView realizes for a new offset 5× deeper than the
+matrix's page. The app still exits cleanly at all four scroll arms, so this one is a
+performance limit, not a defect.
+
+### 3 · Retracted: "a page past 20 000 rows never goes idle"
+
+Earlier in this session the ladder's first attempt (`…-stress-ladder-vg.jsonl`, the same
+nine arms before the settle change) read 100 000 rows as 95.4–97.9 % of a core busy
+forever, 50 000 as 40.7–50.2 %, and 20 000 as 0.19 % — and that slope looked like a
+mechanism, so it was written down as a defect. It was a harness artefact. The 8 s sample
+started two seconds after the window appeared, which at 10 000 rows is after the seed
+session has been written back and at 100 000 is squarely inside it. The same binary, the
+same page, watched with a per-2 s sampler
+(`.scratch/idle_out.txt`) instead of a fixed sample: CPU holds 95 % until t≈43 s, crosses
+0 % at t≈47 s, and sits at 0.0–0.8 % for the remaining 135 s of the window at 236 MB, flat.
+The ladder's `settle`/`settled` columns exist because of this, and they are the fix:
+S100000 now publishes *49.8 s to quiet, then 0.95 %* rather than a number that depends on
+where the sample happened to land. S50000 settles in 12.9 s, S20000 in 4.8 s.
+
+One arm does not fit the retraction, and it is named so here rather than smoothed over:
+**S100000-seed** (`settled: false`, 95.12 %, `refused-to-exit`) is the same 100 000 rows on
+a fresh database, where the app is still writing at the 90 s cap. Loading 100 000 rows and
+saving them for the first time is genuinely not finished inside 90 s; loading them a second
+time is. That is a real cost at a size nobody should have, and it is the honest residue of
+the claim above.
+
+### 4 · Open defect A · a page where every row is a picture grows until something stops it
+
+`--pictures` equal to `--blocks` makes `bench_picture_plan`'s stride 1, so *every* row of
+the page is an image block, drawn from the 200-fixture pool. The ladder's P20000 arm (which
+is that shape: 20 000 requested on 10 000 rows clamps to 10 000) read 695.2 MB after an 8 s
+window. Three longer observations of the same shape: 4 400 MB at 90 s idle
+(`.scratch/leak_out.txt`, ≈+45 MB/s, monotonic, CPU pinned ≈95 %), 6 582 MB at 121 s
+scrolled (`.scratch/diag_out.txt`), and 3 099 MB at 101 s with the app on its 80 s timer
+and never reaching it (`.scratch/final_out.txt`). Of those four, only the ladder arm and the
+3 099 MB one print the `dump-state` identity line; the two longest runs predate the witness
+rule, so they are corroboration of a shape already measured under it, not independent
+proof.
+
+The three-arm control settles what the growth tracks. All three ran the same binary, same
+machine, 100 s window, each printing its own identity:
+
+| arm | shape | image rows | stride | WS at end | reached its 80 s timer |
+|-----|-------|-----------:|-------:|----------:|------------------------|
+| A | 10 000 rows, `--pictures 5000` | 5 000 | 2 | **166 MB flat** | yes, exit 0 at 91 s, cache 2 / 7.03 MB |
+| B | 10 000 rows, `--pictures 10000` | 10 000 | **1** | **3 099 MB and climbing** | no |
+| B2 | 20 000 rows, `--pictures 10000` | 10 000 | 2 | **180 MB flat, quiet from t≈56 s** | no (see below) |
+
+So it is **not** the number of image rows — B and B2 hold the same 10 000 of them, and one
+is flat while the other ate 3 GB. It is not the text between them either. It is stride 1:
+a page with no non-image row anywhere. And it is not the decode cache, which is the design
+defence that is *not* failing: the database stays at 4 KB with a 1.4 MB WAL, and the cache
+report never prints because the process never reaches the callback that prints it, while
+the 32 MiB budget and its nine-frame ceiling held in every other media arm in this file.
+Whatever is growing is per-row and outside the LRU. Not claimed: a cause. The two
+candidates worth an hour each are Slint's path/texture cache for rasters whose rows never
+leave the realized window, and a model update that re-realizes rather than reuses when
+*every* delegate is an image delegate.
+
+Reproduce:
+`quire.exe --blocks 10000 --pictures 10000 --db %TEMP%\B.db --dump-state --auto-exit 80`
+against `.scratch/diag_size2.ps1`, which samples the process and the database every 2 s and
+prints the identity line. A user reaches this shape by pasting a picture between every
+paragraph, or by importing a photo page; it is not exotic.
+
+B2's non-exit is its own smaller finding, recorded and left alone: a 20 000-row page that
+is visibly quiet (0–3 % CPU, 180 MB flat for 45 s) still did not run its `--auto-exit 80`
+callback inside a 101 s window, where the same timer on the 10 000-row arm fired at ≈80 s.
+One row, no mechanism, not worth a claim.
+
+### 5 · Open defect B · 10 000 coloured code rows plus a scroll never yields the thread
+
+`--code 10000` turns every row into a code block with syntax colouring — so 10 000 rows
+each laying out runs of differently coloured text. **Idle, that page is free**: it settles
+in 4.8 / 5.4 s to 0.00 / 0.58 % at 139.7 MB, and exits cleanly. Scroll it, and both ladder
+passes read 92.35 / 98.50 % of a core with a **flat** working set (142.7 → 143.6 MB — no
+leak; this is pure redraw), and neither reaches its own quit timer. The 100 s confirmation
+(`.scratch/final_out.txt` arm C) is CPU 82–101 % across the whole window at 144–149 MB, and
+`cache: never reported`.
+
+The control is arm D of the same batch: **the same 10 000-row page with plain text rows,
+flicked identically, exits 0 at t=82 s on its 80 s timer**, after walking 1 639 836 px of
+scroll. So the scroll is not the problem and the page length is not the problem; it is the
+combination of a coloured-code row with a moving viewport. A wheel tick is the same story at
+8 px (`.scratch/step_out.txt`: 74–100 % CPU, 161 MB flat, no exit).
+
+Two consequences worth writing down even though neither is a fix. First, the M7 follow-up
+list's "continuous scroll CPU" now has a worst measured case, and a busy event loop that
+misses a `slint::Timer` is the mechanism by which *the app cannot close itself* — the user
+who quits gets a kill, and the attachment-cache report that this file quotes in every other
+media arm is unavailable precisely on the arm that most needs it. Second, the number this
+row supersedes: ADR-0042 measured the colouring at no per-row cost, and that is still true
+— it is idle, and idle is flat. The gate could not see the scroll because the gate does not
+scroll marked rows.
+
+Reproduce:
+`quire.exe --blocks 10000 --code 10000 --scroll --scroll-step 200 --db %TEMP%\C.db --dump-state --auto-exit 80`
+with `--code 10000` removed for the control that exits.
+
+### 6 · What this batch does not measure
+
+* **A clean data-layer reading.** The headless `#[ignore]` probes (relation pick, rollup
+  window, content stamp, backlink panel, reclaim, TOC/find/marks projection, DIB paste)
+  *were* re-run in this window, and they are **discarded**: they shared the machine with a
+  stress arm, and the same probes read 3.5–15× their recorded rows (rollup window median
+  114.6 ms against the recorded 28.5 ms; a 1 000-orphan reclaim sweep 8 815 ms against 550 ms).
+  The one claim that survived the load is the ratio §三十九 cares about — the window against
+  the whole-table control, 3.58× here against 3.12× recorded. A re-run is owed, and it is
+  now also a different question than in September: the data layer lives in pinned
+  `quire-core` (ADR-0093/0094), so a post-extraction reading is not comparable to the
+  09-22 rows even without contention.
+* **A skia arm for any of it.** Every row above is FemtoVG. The two renderer families are
+  compared for first paint and for scene F in their own sections; the ladder has never been
+  run on skia, and defect A in particular could be a texture-cache behaviour that skia does
+  not have — which is a reason to run it, not a finding.
+* **Real photographs.** The fixtures are 1280×720 gradients, the cheapest raster there is
+  to decode, so defect A's growth is not measured against a real photo library's cost.
+* **A human scroll.** The harness measures CPU, private bytes and `scroll_y`; it cannot see
+  a dropped frame or a hitch. The "no hitching observed" line in the §六 checklist is still
+  the same six-word debt it was.
+* **`--code` above 10 000, `--pictures` in the 1 000–9 999 range, and a page where pictures
+  sit between paragraphs the way a real page has them** rather than on a stride. Defect A is
+  an exact shape, not a size threshold, and where the shape stops being exact is unmeasured.
+* **Anything past one window.** The ladder is a single-process ladder. The 100 000-row seed
+  arm's 90 s of writing is a database story that no amount of window sampling separates from
+  a UI story.

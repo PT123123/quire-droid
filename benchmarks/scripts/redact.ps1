@@ -11,6 +11,11 @@
 
 # Resolved in this file's own scope, where $PSScriptRoot is unambiguous: this
 # directory is <repo>\benchmarks\scripts.
+# A caller that hands this function a forward-slash path (a bash-style launch
+# argument, a URI-ish constant) still points at the same directory, so a rule
+# that only matches backslashes lets the absolute prefix through and the
+# username fallback below redacts it to <user> - a row that reads scrubbed and
+# is not. Match either separator.
 $prefixes = @(
     @{ Path = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)); Placeholder = '<repo>' },
     @{ Path = $env:TEMP;         Placeholder = '<temp>' },
@@ -18,7 +23,10 @@ $prefixes = @(
     @{ Path = $env:USERPROFILE;  Placeholder = '<user>' }
 ) | Where-Object { $_.Path } |
   ForEach-Object { [pscustomobject]@{
-      Pattern = [regex]::Escape($_.Path)
+      # Each segment escaped on its own, then rejoined with a class that
+      # accepts either separator - going through -replace here would eat the
+      # doubled backslash as an escape of its own.
+      Pattern = (((($_.Path -split '[\\/]') | ForEach-Object { [regex]::Escape($_) }) -join '[/\\]'))
       Replacement = $_.Placeholder
       Weight = $_.Path.Length
   } }
