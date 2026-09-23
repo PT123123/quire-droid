@@ -42,11 +42,19 @@ if ($deps -ge 0 -and $m.Index -gt $deps) {
     throw "the first top-level 'version' key sits below [dependencies] — refusing to bump the wrong table"
 }
 $version = "{0}.{1}.{2}" -f $m.Groups[1].Value, $m.Groups[2].Value, ([int]$m.Groups[3].Value + 1)
-# splice only the digits, so every other byte of the manifest is untouched
-$text = $text.Substring(0, $m.Groups[1].Index) + $version +
-    $text.Substring($m.Groups[1].Index + $m.Groups[1].Length)
+# splice exactly the three digits — group 1 starts at the major, group 3 ends at
+# the patch — so every other byte of the manifest is untouched
+$vStart = $m.Groups[1].Index
+$vEnd = $m.Groups[3].Index + $m.Groups[3].Length
+$text = $text.Substring(0, $vStart) + $version + $text.Substring($vEnd)
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($manifest, $text, $utf8)
+# read it back before anything expensive happens on top of a bad manifest
+$check = [regex]::Match([System.IO.File]::ReadAllText($manifest), '(?m)^version\s*=\s*"([^"]+)"')
+if (-not $check.Success -or $check.Groups[1].Value -ne $version) {
+    throw ("the bump wrote '{0}', expected '{1}' — aborting before the build" -f `
+        $check.Groups[1].Value, $version)
+}
 Write-Output "==> version -> $version"
 
 # ── 2: the build ────────────────────────────────────────────────────────────
