@@ -51,6 +51,15 @@ android-apk:
 install:
     $apk = "target\release\apk\quire_shell.apk"; if (-not (Test-Path $apk)) { throw "no APK at $apk; run 'just android-apk' first" }; if (-not (adb devices | Select-String "device$")) { throw "no adb device; connect a phone or start an emulator, then check 'adb devices'" }; adb install -r $apk; exit $LASTEXITCODE
 
+# release: bump the patch version, build the APK, publish it to GitHub.
+# Obtainium installs this app by watching the repository's releases, so the
+# publish is the delivery: the bump lands as its own commit (versionName and
+# versionCode are both derived by cargo-apk from [package] version, so without
+# it Android sees no update at all), the tag v<version> points at that commit,
+# and quire-<version>.apk is attached to the release. Needs `gh` signed in.
+release-publish:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release-publish.ps1
+
 # headless visual shot: software-rendered PNG of the real UI, no window.
 # Scene names: default dark palette search-notes menu rename settings dialog empty
 shot scene="default":
