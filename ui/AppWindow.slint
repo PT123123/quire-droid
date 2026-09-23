@@ -5,6 +5,7 @@ import { Theme } from "Theme.slint";
 import { Colors } from "Colors.slint";
 import { Typography } from "Typography.slint";
 import { Icon } from "Icons.slint";
+import { ListView } from "std-widgets.slint";
 import { Button } from "components/Button.slint";
 import { UIState } from "Types.slint";
 import { AppShell } from "components/AppShell.slint";
@@ -130,7 +131,14 @@ component SlashMenuPopup inherits PopupWindow {
     width: Math.min(280px, 760px);
     // touch rows at the 44 dp minimum, desktop keeps 32 px (see BlockMenuPopup)
     property <length> row-h: UIState.touch-mode ? 44px : 32px;
-    height: UIState.slash-items.length * row-h + 8px;
+    // natural height, clamped to the window space below the anchor so a tall
+    // insert list scrolls inside the popup instead of running off the window
+    // bottom — the "+" list is ~27 rows and is taller than a phone screen
+    // (the same clamp ContextMenu uses for its Move-to list)
+    height: min(
+        UIState.slash-items.length * row-h + 8px,
+        max(UIState.window-h - UIState.slash-y - 20px, 120px),
+    );
     // outside click / Escape dismiss; UIState syncs via the is-open mirror
     // in AppWindow (a popup must not read its own `is-open`)
     close-policy: PopupClosePolicy.close-on-click-outside;
@@ -150,49 +158,54 @@ component SlashMenuPopup inherits PopupWindow {
         border-width: 1px;
         border-color: Colors.border;
 
-        for item[idx] in UIState.slash-items : Rectangle {
-            x: 4px;
-            y: 4px + (idx * row-h);
+        ListView {
+            x: 4px; y: 4px;
             width: parent.width - 8px;
-            height: row-h;
-            border-radius: Theme.radius-sm;
-            // placeholder rows ("later" kinds) render muted and inert
-            opacity: item.disabled ? 0.55 : 1.0;
-            background: !item.disabled && (idx == UIState.slash-focus || sl-ta.has-hover)
-                ? Colors.surface-hover : transparent;
-            animate background { duration: Theme.duration-instant; }
+            height: parent.height - 8px;
+            content-width: self.width;
 
-            HorizontalLayout {
-                x: 8px;
-                // bounded inside the row: the hint's elide needs a real
-                // width, or the description clips at the popup border (D4)
-                width: parent.width - 16px;
-                spacing: Theme.spacing-sm;
-                Text {
-                    text: item.label;
-                    font-family: Typography.ui-font;
-                    font-size: Typography.size-ui;
-                    color: item.disabled ? Colors.text-muted
-                        : idx == UIState.slash-focus ? Colors.text-primary : Colors.text-secondary;
-                    vertical-alignment: center;
-                    horizontal-stretch: 0;
+            for item[idx] in UIState.slash-items : Rectangle {
+                width: parent.content-width;
+                height: row-h;
+                border-radius: Theme.radius-sm;
+                // placeholder rows ("later" kinds) render muted and inert
+                opacity: item.disabled ? 0.55 : 1.0;
+                background: !item.disabled && (idx == UIState.slash-focus || sl-ta.has-hover)
+                    ? Colors.surface-hover : transparent;
+                animate background { duration: Theme.duration-instant; }
+
+                HorizontalLayout {
+                    padding-left: Theme.spacing-sm;
+                    padding-right: Theme.spacing-sm;
+                    spacing: Theme.spacing-sm;
+                    Text {
+                        text: item.label;
+                        font-family: Typography.ui-font;
+                        font-size: Typography.size-ui;
+                        color: item.disabled ? Colors.text-muted
+                            : idx == UIState.slash-focus ? Colors.text-primary : Colors.text-secondary;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    Rectangle { width: 0px; }
+                    // the description is desktop-only: on a phone the rows
+                    // carry the label alone (see CommandPalette's hint)
+                    if item.hint != "" && !UIState.touch-mode : Text {
+                        text: item.hint;
+                        font-family: Typography.ui-font;
+                        font-size: Typography.size-caption;
+                        color: Colors.text-muted;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
-                Rectangle { width: 0px; }
-                Text {
-                    text: item.hint;
-                    font-family: Typography.ui-font;
-                    font-size: Typography.size-caption;
-                    color: Colors.text-muted;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-            }
-            sl-ta := TouchArea {
-                enabled: !item.disabled;
-                mouse-cursor: item.disabled ? MouseCursor.default : MouseCursor.pointer;
-                clicked => {
-                    UIState.slash-focus = idx;
-                    UIState.slash-apply-selected();
+                sl-ta := TouchArea {
+                    enabled: !item.disabled;
+                    mouse-cursor: item.disabled ? MouseCursor.default : MouseCursor.pointer;
+                    clicked => {
+                        UIState.slash-focus = idx;
+                        UIState.slash-apply-selected();
+                    }
                 }
             }
         }
