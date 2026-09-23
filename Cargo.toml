@@ -198,13 +198,22 @@ orientation = "unspecified"
 config_changes = "orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density|uiMode"
 
 # cargo-apk refuses to sign a `--release` package with the debug key it embeds,
-# so the path it asks for is spelled out here. What sits at that path is a
-# throwaway key that `scripts/android-build.ps1` generates on first use into
-# `.scratch/` — a directory this repository does not track — and the password is
-# the one in that script, not a secret. It exists so the last step of packaging
-# (aapt, zipalign, apksigner) is proven on this machine; shipping a real build
-# means a real keystore with a real identity, and that decision is M9.1's.
+# so the path it asks for is spelled out here. It is the real key now (M9.1): a
+# release APK Obtainium installs is signed with one stable identity, kept outside
+# the repository at `C:\Users\ted\keystores\debug.keystore` — alias
+# `androiddebugkey`, storepass and keypass both `android`.
+#
+# A path rather than a copy because a keystore is an identity, not an artifact:
+# Android refuses an update whose signature differs from the installed app, so
+# every release has to be signed by this one file, and duplicating it per machine
+# is how that promise gets broken silently.
+#
+# Everything up to and including v0.1.1 was signed with the throwaway
+# `.scratch/m9/quire-debug.jks` that `scripts/android-build.ps1` used to generate
+# on first use. An APK signed with *this* key cannot install over one of those,
+# so the first release after the switch needs the old app uninstalled. It is the
+# last time that is true — that is the whole point of the switch.
 [package.metadata.android.signing.release]
-path = ".scratch/m9/quire-debug.jks"
-keystore_password = "quire-debug"
+path = 'C:\Users\ted\keystores\debug.keystore'
+keystore_password = "android"
 

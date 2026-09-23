@@ -54,17 +54,15 @@ foreach ($a in $abris) {
 
 if ($Task -eq "apk") {
     # cargo-apk will not sign a release package with the debug key it ships, and
-    # the manifest points at this file. It is a throwaway identity, generated on
-    # first use into `.scratch/` — which this repository does not track — so the
-    # packaging steps after the compiler (aapt, zipalign, apksigner) can be run
-    # at all. A real release keystore is a decision for M9.1, not a script.
-    $keystore = ".scratch\m9\quire-debug.jks"
+    # the manifest names the key it wants instead (Cargo.toml's signing note).
+    # That key is a real, stable identity kept outside this repository, which is
+    # what makes an update installable: Android refuses one whose signature
+    # differs. So this checks it is there rather than making anything — a key
+    # generated here would sign a *different app*, and the release would be one
+    # nobody can update.
+    $keystore = "C:\Users\ted\keystores\debug.keystore"
     if (-not (Test-Path $keystore)) {
-        New-Item -ItemType Directory -Force -Path (Split-Path $keystore) | Out-Null
-        keytool -genkeypair -keystore $keystore -storepass quire-debug `
-            -keypass quire-debug -alias quire-debug -keyalg RSA -keysize 2048 `
-            -validity 10000 -dname "CN=Quire (throwaway debug key), OU=dev, O=quire, C=US"
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        throw "no release keystore at $keystore — see the signing note in Cargo.toml"
     }
     # `--lib` is not decoration. cargo-apk 0.10 reads the manifest itself (not
     # cargo's build plan) and packages *every* artifact it finds — the lib and
@@ -94,7 +92,7 @@ if ($Task -eq "apk") {
         throw "$apk is not from this run ($($info.LastWriteTime)) — cargo-apk bailed before writing it"
     }
     Write-Host (
-        "==> {0} = {1} B ({2:N2} MiB), both ABIs inside, signed with {3}" -f
+        "==> {0} = {1} B ({2:N2} MiB), arm64-v8a inside, signed with {3}" -f
         $apk, $info.Length, ($info.Length / 1MB), $keystore
     )
     exit 0

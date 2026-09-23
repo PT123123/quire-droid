@@ -83,14 +83,23 @@ if (@($existing | Where-Object { $_.tagName -eq $tag }).Count -gt 0) {
     & gh release upload $tag $named --clobber
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
+    # The signing identity changed once, at 0.1.2: everything before it was
+    # signed with the throwaway key the build script used to generate, and an
+    # APK signed by the stable key cannot install over one of those. Only the
+    # release that crossed the switch carries the warning; a later one would be
+    # telling people to uninstall for no reason.
+    $switch = if ($version -eq "0.1.2") {
+        "- v0.1.1 and older carry a different signature; uninstall the app once`n  before installing this one`n"
+    } else {
+        ""
+    }
     $notes = @"
 Quire $version for Android (arm64-v8a).
 
 - package: dev.quire.android (minSdk 24, targetSdk 34)
-- signed with the throwaway key scripts/android-build.ps1 generates (see the
-  signing note in Cargo.toml), so an update installs cleanly only over a build
-  carrying this same signature
-
+- signed with the stable key Cargo.toml names, so an update installs over every
+  earlier build that carries the same signature
+$switch
 Obtainium: add https://github.com/$repo and it picks up the APK attached to
 every release.
 "@
