@@ -8,6 +8,16 @@
 //! answers differently: where the files go, which backend owns the window, and
 //! how much stack the first layout pass needs.
 
+/// How much larger than the device's own density the UI is drawn (M9.d).
+///
+/// Both are multiplies on top of `dpi / 160`, so the device's proportion is
+/// preserved and the result still tracks a screen the app has never seen. The
+/// split is Android's own definition of a tablet — `sw600dp`, the breakpoint the
+/// platform itself uses — and the numbers are the user's, not derived.
+const TABLET_MIN_DP: i32 = 600;
+const TABLET_BOOST: f32 = 1.40;
+const PHONE_BOOST: f32 = 1.45;
+
 /// The name the loader looks for; `android-activity` hands over the `AndroidApp`
 /// that everything else on this platform is reached through.
 #[no_mangle]
@@ -28,6 +38,32 @@ pub fn android_main(app: slint::android::AndroidApp) {
         // looking like it had saved.
         None => eprintln!("quire: the activity gave us no internal data path"),
     }
+
+    // The shell's own proportion (M9.d), read here because this is the last
+    // place the Activity's `Configuration` is reachable — `slint::android::init`
+    // takes `app` by value.
+    //
+    // The backend answers with the device's density (`dpi / 160`, Android's own
+    // `dp`), and M9.c stopped overriding that: 1.5 had been pinning a 2.5 tablet
+    // down to 60 % of a normal app. But "the platform's own answer" is not the
+    // same as "large enough": measured against Material's own scale, this UI's
+    // chrome lands at 11–13 dp where Android uses 12–16 sp, and a finger on a
+    // 10" tablet reads it as small (M9 FEEDBACK again). So the density is kept
+    // and multiplied — never replaced, which is the mistake M9.b made.
+    //
+    // The class split is the user's rule, not a guess: "手机需要大一点，平板不需要
+    // 那么大，但现在平板也太小了，平板放大 40%". `smallest_screen_width_dp` is
+    // Android's own `sw…dp`, so the breakpoint is the platform's (600 dp) rather
+    // than a screen width this file invented. A phone's logical width is already
+    // the smaller one, so it takes the larger boost.
+    let ui_scale = {
+        let config = app.config();
+        let density = config.density().map(|dpi| dpi as f32 / 160.0).unwrap_or(1.0);
+        let smallest_dp = config.smallest_screen_width_dp().unwrap_or(0);
+        let boost = if smallest_dp >= TABLET_MIN_DP { TABLET_BOOST } else { PHONE_BOOST };
+        density * boost
+    };
+    crate::platform::set_ui_scale(ui_scale);
 
     // Installs Slint's Android platform backend. Nothing may construct a
     // component before this, including the `AppWindow::new` further down the

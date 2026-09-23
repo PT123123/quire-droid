@@ -37,6 +37,35 @@ pub fn set_data_dir(dir: PathBuf) {
     let _ = APP_DATA_DIR.set(dir);
 }
 
+/// The window scale factor the Android shell pins, or `None` where the
+/// platform's own factor is left alone.
+///
+/// The same seam as `data_dir`, for the same reason: the answer belongs to the
+/// platform (`android_main` can read the Activity's `Configuration`, and
+/// nothing below it can), while the *use* has to happen in `launcher::run`,
+/// because a scale factor needs a `Window` and that is where one first exists.
+/// `None` on a desktop is not "no scaling" — it means "whatever the window
+/// system says", which is what the desktop has always done.
+pub fn ui_scale() -> Option<f32> {
+    #[cfg(target_os = "android")]
+    {
+        ANDROID_UI_SCALE.get().copied()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "android")]
+static ANDROID_UI_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+/// Called once from `android_main`, before the window exists (M9.d).
+#[cfg(target_os = "android")]
+pub fn set_ui_scale(scale: f32) {
+    let _ = ANDROID_UI_SCALE.set(scale);
+}
+
 /// Copy `text` to the system clipboard, as CF_UNICODETEXT via the same FFI
 /// `read_clipboard` uses (ADR-0025's write half: `clip.exe`'s OEM-codepage
 /// stdin garbles non-ASCII, and "Copy page as Markdown" must carry CJK).

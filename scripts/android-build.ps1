@@ -2,14 +2,20 @@
 # purpose, so this file is where the toolchain block lives (the desktop's own
 # entry is the `just` recipes).
 #
-#   powershell -File scripts\android-build.ps1 -Task check          # both ABIs, compile only
-#   powershell -File scripts\android-build.ps1 -Task lib            # both ABIs, link the cdylib
-#   powershell -File scripts\android-build.ps1 -Task apk            # one APK, both ABIs inside
+#   powershell -File scripts\android-build.ps1 -Task check          # aarch64, compile only
+#   powershell -File scripts\android-build.ps1 -Task lib            # aarch64, link the cdylib
+#   powershell -File scripts\android-build.ps1 -Task apk            # one APK, aarch64 inside
+#
+# `-Abi both` (or x86_64) still works — the toolchain block below covers either
+# — but the default is arm64 since 2026-09-24: the target is a TB320FC, the
+# x86_64 arm was for an emulator nobody runs, and a second ABI doubles the cold
+# pass. `build_targets` in Cargo.toml is what cargo-apk packages, and it is
+# arm64-only too, so `-Abi` decides what gets *compiled* rather than what ships.
 #
 # The one flag an Android build needs is the one that turns the desktop default
 # off: `default` is FemtoVG, and Slint cfg's FemtoVG out of this platform.
 param(
-    [ValidateSet("x86_64", "aarch64", "both")] [string]$Abi = "both",
+    [ValidateSet("x86_64", "aarch64", "both")] [string]$Abi = "aarch64",
     [ValidateSet("check", "lib", "apk")] [string]$Task = "check",
     [string]$Ndk = "30.0.15729638",
     [string]$Api = "24"

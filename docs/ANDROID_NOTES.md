@@ -11,6 +11,79 @@ below. **The headline: the stack we doubted builds and links for Android, and
 the one hard blocker in our dependency graph is a file-dialog crate this page
 never mentions.**
 
+## M9.d multiplies the density (2026-09-24)
+
+M9.c made the app track the device's density exactly, which is the definition of
+"normal Android proportions" and which the device measurement confirms it now
+does. It is still too small, and that is not a contradiction — it is what the
+numbers say about the *design*:
+
+- **A correct scale factor is not a comfortable one.** Against Material's own
+  scale this UI's chrome lands at 11–13 dp (`Typography.size-caption` 11,
+  `size-ui` 13) where Android uses 12–16 sp, and the page title sits at 38 dp.
+  The range is wrong at both ends for a touch screen, so "the density is right"
+  and "it reads small" were both true. The fix multiplies the density instead of
+  replacing it — `×1.40` on a tablet, `×1.45` on a phone — so the device's own
+  proportion survives and only its size changes. Replacing rather than
+  multiplying is exactly what M9.b got wrong; the multiplication needs a
+  *runtime* hook, which is why this is not a one-line `build.rs` change.
+- **The class split is the platform's, not a guess.** `smallest_screen_width_dp`
+  from the Activity's `Configuration` is Android's own `sw…dp`, so the 600 dp
+  line between "phone" and "tablet" is the one Android already draws. The
+  boosts are the user's numbers, not derived: *"按比例来，手机需要大一点，平板不
+  需要那么大，但现在平板也太小了，平板放大 40%"*.
+- **Slint 1.18 has no public setter for the window scale factor.** `Window`
+  exposes `scale_factor()` and nothing that writes one. The one door is
+  `WindowInner::set_const_scale_factor`, which is `pub` and which the *generated*
+  code already calls when `slint-build` was handed a compile-time factor — so it
+  is reached the way that code reaches it, through
+  `slint::private_unstable_api::re_exports`. It is applied in
+  `launcher::run` right after `AppWindow::new`, because a scale factor needs a
+  `Window` and that is the first moment one exists; `android_main` reads the
+  density and the `sw…dp` (it is the last place `app`'s `Configuration` is
+  reachable — `slint::android::init` takes `app` by value) and leaves them in
+  `platform::ui_scale`. The factor being *constant* is load-bearing: the backend
+  sets its own `dpi / 160` while handling `InitWindow`, and a constant factor
+  turns that later write into a no-op, leaving this value standing. This is a
+  private API of a pinned Slint version; the public alternative is a
+  `WindowAdapter` wrapper over the Android backend, which is a lot more code for
+  the same number.
+- **arm64 only from here.** `build_targets` is `["aarch64-linux-android"]` and
+  `android-build.ps1` defaults to it — the one device this ships to is a
+  TB320FC, the x86_64 arm was for an emulator nobody ran, and a second ABI
+  doubles the cold pass. `-Abi x86_64` still works.
+
+## M9.c is delivered on a device (2026-09-24)
+
+The first slice that was **run**, not only built — and it found what a build
+cannot. A TB320FC (Android 15; `adb devices` is no longer empty):
+
+- **The density is 2.5 and the build had pinned 1.5.** `adb shell wm density`
+  reads 400, and `400 / 160 = 2.5` is the scale the activity backend hands
+  Slint (`androidwindowadapter.rs`: `config().density() / 160`) — the same ratio
+  Android's `dp` is built from. M9.b's `with_scale_factor(1.5)` had been
+  justified by "these tablets report an mdpi-class bucket"; they do not.
+  `with_scale_factor` sets the window's **constant** factor, which *replaces*
+  the platform's rather than composing with it, so the pin did not lift a 1.0
+  layout to 1.5 — it *lowered* a 2.5 one to 1.5, landing every font, row, bar
+  and popup at 60 % of a normal Android app. The compile-time pin is gone:
+  `build.rs` passes no factor on any platform, so the device's own answer is what
+  applies. That is the right *proportion* and it is not the same as the right
+  *size* — M9.d, above, multiplies this answer, and never replaces it again.
+- **The launcher icon exists for the first time.** The generated
+  AndroidManifest had never carried `android:icon` — cargo-apk writes one only
+  when `metadata.android.application.icon` names a resource, and packs a `res/`
+  tree only when `metadata.android.resources` names one — so a launcher showed
+  the generic Android placeholder. `android/res` now holds the five density
+  buckets plus an adaptive icon (`mipmap-anydpi-v26`), all drawn by
+  `install/make_icon.ps1`; `aapt dump badging` resolves
+  `icon='res/mipmap-anydpi-v26/ic_launcher.xml'` at every density.
+- Measured, where the page above could only assume: the layout fills a 640 dp
+  logical width (1600 physical / 2.5) with no clipping. `AppWindow`'s
+  `min-width: 940px` / `min-height: 600px` are **not** enforced on this backend
+  — `update_window_properties` reads only `is_fullscreen` — so the phone gets
+  the whole surface and the desktop keeps its minimum.
+
 ## M9.pre is delivered (2026-09-23)
 
 The shell now compiles and links for Android, and the desktop is unchanged
@@ -273,6 +346,13 @@ viewer still stand as the next two gates, in that order.
    been run against this APK: the signature is a throwaway key, the `INTERNET`
    permission is declared because `--share` opens a socket, and neither has been
    looked at by a package manager.
+   *Closed 2026-09-24 (M9.c):* that changed. A TB320FC is attached (Android 15),
+   `adb install -r` has run against this package, and the app launches and paints
+   on it. The two facts the milestone had no device to check — the density the
+   backend reports and the icon the launcher resolves — are exactly what that
+   first run corrected, which is the argument for hardware being the critical
+   path rather than a build result. Logcat is still unread, and risks 1 and 2
+   (the IME) are still the two things a finger owes this milestone.
 
 ## Build tooling sketch
 

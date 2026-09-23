@@ -155,10 +155,21 @@ strip = "debuginfo"
 # at this table.
 [package.metadata.android]
 package = "dev.quire.android"
-build_targets = ["aarch64-linux-android", "x86_64-linux-android"]
+# arm64 only (decided 2026-09-24): the one device this ships to is a TB320FC.
+# The x86_64 arm existed for an emulator nobody ran, and every extra entry
+# doubles the cold pass — measured 17–23 minutes per ABI. `scripts/android-build.ps1`
+# keeps `-Abi x86_64` for the day an emulator is worth it; nothing else does.
+build_targets = ["aarch64-linux-android"]
 # The `.so` is the app: Skia's statics land in it, so an unstripped one is
 # hundreds of MB (measured: 192 MB debug for the 2026-09-20 probe).
 strip = "strip"
+# Where the launcher icon lives. cargo-apk packs a `res/` tree only when this
+# names one — it has no icon field of its own — and without it the generated
+# AndroidManifest carried no `android:icon` at all, so the launcher fell back to
+# the generic Android placeholder (M9 FEEDBACK: "应用图标怎么没了"). The tree is
+# drawn by `install/make_icon.ps1`, the same script that draws the .ico, so
+# there is one picture and not two.
+resources = "android/res"
 
 [package.metadata.android.sdk]
 # API 24 is what the NDK 30 clang wrapper targets here, and Slint's own dex step
@@ -174,6 +185,10 @@ name = "android.permission.INTERNET"
 
 [package.metadata.android.application]
 label = "Quire"
+# `@mipmap/ic_launcher` is the adaptive icon in `mipmap-anydpi-v26`, and on
+# every older API it is the plain rounded-square PNG the five density buckets
+# beside it hold.
+icon = "@mipmap/ic_launcher"
 theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 
 [package.metadata.android.application.activity]

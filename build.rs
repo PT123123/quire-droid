@@ -5,23 +5,26 @@ fn main() {
     // bisect compiler issues per component (see docs/DECISIONS.md debugging note).
     println!("cargo:rerun-if-env-changed=QUIRE_PROBE");
     let ui = std::env::var("QUIRE_PROBE").unwrap_or_else(|_| "ui/AppWindow.slint".into());
-    // The Android shell compiles the same .slint tree with a fixed scale
-    // factor. The activity backend derives its scale from the device's
-    // density bucket (dpi / 160), and the tablets this app runs on report an
-    // mdpi-class bucket, so the desktop-sized layout lands at desktop
-    // physical sizes — 13 px body text and 40 px bars on a 10" screen, every
-    // touch target half the size a finger wants (M9 FEEDBACK: "默认比例太小").
-    // 1.5 lifts every logical px uniformly (fonts, rows, bars, popups): the
-    // 2000-px-wide surface becomes a ~1333-px logical one and the 44 px touch
-    // rows render at ~66 physical px. Compile-time on purpose — the runtime
-    // scale is the backend's alone (ADR-0096's "one compiled unit"), and
-    // slint-build applies it before any window exists.
-    let config = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
-        slint_build::CompilerConfiguration::new().with_scale_factor(1.5)
-    } else {
-        slint_build::CompilerConfiguration::new()
-    };
-    slint_build::compile_with_config(&ui, config).expect("Slint build failed");
+    // No compile-time scale factor on any platform, and on Android that is the
+    // whole point rather than a default left alone.
+    //
+    // `with_scale_factor` sets Slint's *constant* scale factor, which does not
+    // compose with the platform's — it replaces it (slint-build: "changing the
+    // scale factor at runtime will not have any effect"; generated as
+    // `set_const_scale_factor`). The activity backend is what answers with the
+    // device's own density (`dpi / 160`, the same ratio Android's `dp` is built
+    // from), so pinning it at compile time throws that answer away.
+    //
+    // M9.b pinned 1.5 here, reasoning that these tablets report an mdpi-class
+    // bucket. Measured on the actual device (TB320FC, Android 15) instead:
+    // `wm density` reads 400, i.e. 400/160 = 2.5. So the pin did not lift a
+    // 1.0 layout to 1.5 — it *lowered* a 2.5 layout to 1.5, and the whole UI
+    // (13 px body text, 40 px bars, the thumb bar's labels) landed at 60% of a
+    // normal Android app's size. M9 FEEDBACK again: "默认比例太小".
+    //
+    // Leaving the factor unset is what "正常安卓应用的比例" is: logical px stay
+    // logical, and the backend multiplies them by dpi/160 exactly once.
+    slint_build::compile(&ui).expect("Slint build failed");
 
     // The exe's shell identity only exists where there is an exe to carry it.
     // `embed-resource` asks the *host* for rc.exe, and the host is Windows when

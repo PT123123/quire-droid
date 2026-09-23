@@ -42,6 +42,15 @@ android-lib:
 android-apk:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android-build.ps1 -Task apk
 
+# push the APK android-apk left in target\release\apk onto the attached device
+# or emulator, replacing any install already there (`adb install -r`, which keeps
+# app data). It builds nothing — run `android-apk` first. The file name is [lib]
+# name's (`quire_shell`), and adb is expected on PATH (the SDK's platform-tools).
+# Both guards fail before adb does, so an empty `adb devices` reads as a missing
+# device rather than as a package-manager error.
+install:
+    $apk = "target\release\apk\quire_shell.apk"; if (-not (Test-Path $apk)) { throw "no APK at $apk; run 'just android-apk' first" }; if (-not (adb devices | Select-String "device$")) { throw "no adb device; connect a phone or start an emulator, then check 'adb devices'" }; adb install -r $apk; exit $LASTEXITCODE
+
 # headless visual shot: software-rendered PNG of the real UI, no window.
 # Scene names: default dark palette search-notes menu rename settings dialog empty
 shot scene="default":

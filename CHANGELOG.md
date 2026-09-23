@@ -499,15 +499,12 @@ First functional release: a local, single-file-database notes workspace.
   the reorder path
 
 ### Android (M9.b · the phone's own defaults)
-- The Android build compiles the same `.slint` tree at a fixed scale factor of
-  1.5 (`build.rs`, `CompilerConfiguration::with_scale_factor`). The activity
-  backend derives its scale from the device's density bucket (dpi / 160), and
-  the tablets this shell runs on report an mdpi-class bucket — so the
-  desktop-sized layout landed at desktop *physical* sizes: 13 px body text and
-  40 px bars on a 10" screen, every touch target half what a finger wants. 1.5
-  lifts fonts, rows, bars and popups together; the 2000-px surface becomes a
-  ~1333-px logical one and the 44 px touch rows render at ~66 physical px. The
-  desktop's build script is untouched, so its scale stays the window system's
+- The Android build set a fixed scale factor of 1.5 here
+  (`build.rs`, `CompilerConfiguration::with_scale_factor`), on the reading that
+  these tablets report an mdpi-class bucket. **That reading was wrong, and the
+  pin made the UI smaller rather than bigger** — M9.c below removes it. What
+  holds from this bullet is the last half: the desktop's build script passes no
+  factor, so its scale stays the window system's
 - Dark is the default theme on both platforms: a library with no stored `theme`
   row opens dark, and a stored "light" still wins (`dark_setting`). Every scene
   the sweep photographs without an explicit `set-dark` therefore renders dark —
@@ -517,6 +514,57 @@ First functional release: a local, single-file-database notes workspace.
   through the empty state's front door) and opens the same insert menu the
   desktop's "+" handle opens, anchored above the bar. The dark-mode and bar
   changes ride the same `UIState` callbacks the keyboard chords use
+
+### Android (M9.c · the phone's real proportions, and its icon)
+- The Android build now sets **no** compile-time scale factor, so the activity
+  backend's own answer stands: the device density, `dpi / 160` — the same ratio
+  Android's `dp` is built from. `with_scale_factor` sets the window's *constant*
+  factor, which **replaces** the platform's rather than composing with it
+  (slint-build: "changing the scale factor at runtime will not have any
+  effect"), so the only value that tracks the device is no value. This corrects
+  M9.b: it pinned 1.5 on a believed mdpi bucket, but reading the density off the
+  device instead of assuming it (`adb shell wm density` on the TB320FC reads
+  400, i.e. 2.5) shows the pin did not lift a 1.0 layout to 1.5 — it *lowered* a
+  2.5 one to 1.5, landing every font, row, bar and popup at 60 % of a normal
+  Android app (M9 FEEDBACK: "安卓默认的缩放比例怎么这么小。你就不能按正常安卓应用的比例来吗").
+  `build.rs` passes no factor on any platform now, so the device's own answer is
+  what applies — and M9.d, below, multiplies that answer for size without ever
+  replacing it again
+- The manifest carries a launcher icon at last. It never had one: cargo-apk
+  writes `android:icon` only when `metadata.android.application.icon` names a
+  resource, and packs a `res/` tree only when `metadata.android.resources` names
+  one, so the generated AndroidManifest carried neither and the launcher fell
+  back to the generic Android placeholder (M9 FEEDBACK: "安卓端的应用图标怎么没了").
+  `android/res` now holds the five density buckets plus an adaptive icon
+  (`mipmap-anydpi-v26` foreground + background), all drawn by
+  `install/make_icon.ps1` — the same script that draws `quire.ico`, so there is
+  one picture and not two
+
+### Android (M9.d · the shell's own proportion)
+- The device density is **multiplied** now, never replaced. M9.c made the app
+  track `dpi / 160` exactly, which is what "normal Android proportions" means
+  and what measurement confirmed — and the user called it too small anyway. The
+  two are not in conflict: against Material's own scale this UI's chrome is
+  11–13 dp where Android uses 12–16 sp, so on a tablet the app draws the
+  document smaller than the platform would. The bump is `×1.40` on a tablet and
+  `×1.45` on a phone, and the split is Android's own —
+  `Configuration::smallest_screen_width_dp()`, i.e. the platform's `sw600dp`
+  breakpoint at 600 dp — rather than a screen width this app invented
+  (M9 FEEDBACK: "按比例来，手机需要大一点，平板不需要那么大，但现在平板也太小了，平板放大40%")
+- Slint 1.18 has no public setter for a window's scale factor (`Window` exposes
+  `scale_factor()` and nothing that writes one), so the value goes through
+  `WindowInner::set_const_scale_factor`, reached from
+  `slint::private_unstable_api::re_exports` — the same method the generated code
+  calls when `slint-build` was given a compile-time factor. It is applied in
+  `launcher::run` immediately after `AppWindow::new`, because a scale factor
+  needs a `Window` and that is where one first exists. That it lands as a
+  *constant* is load-bearing rather than incidental: the backend sets its own
+  `dpi / 160` while handling `InitWindow`, and a constant factor turns that later
+  write into a no-op, which is what leaves this value standing
+- The APK is arm64-only from this slice: `build_targets` is
+  `["aarch64-linux-android"]` and `android-build.ps1` defaults to it. The one
+  device this ships to is a TB320FC, the x86_64 arm existed for an emulator
+  nobody ran, and a second ABI doubles the cold pass. `-Abi x86_64` still works
 
 ### LAN sync (quire-core's `services::sync`)
 - Two Quire installs on one network keep each other's workspace by exchanging
