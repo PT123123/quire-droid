@@ -3961,6 +3961,8 @@ dependencies = [
  "quire-core",
  "rfd",
  "rusqlite",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
 ]

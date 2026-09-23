@@ -371,6 +371,17 @@ export struct CommandRow {
     icon: string,
 }
 
+// One line of the settings dialog's LAN-sync section (crate::sync). Rust
+// builds these from the peers table; the delegate only draws them.
+export struct SyncRow {
+    id: string,
+    label: string,   // "Laptop (windows)"
+    status: string,  // "paired · synced 2026-09-23 14:05" / "seen · not paired"
+    ip: string,
+    paired: bool,
+    online: bool,
+}
+
 export struct SearchRow {
     page-id: int,
     title: string,
@@ -496,6 +507,18 @@ export global UIState {
     // LAN sharing (read-only server on :5877); persisted, restart applies
     in-out property <bool> lan-sharing: false;
     callback toggle-lan-sharing();
+    // LAN sync (crate::sync): the paired/discovered devices, the last line the
+    // engine said, and the switch that lets the periodic round run by itself.
+    // The rows are Rust-built from the peers table (settings row "sync.peers").
+    in-out property <[SyncRow]> sync-rows;
+    in-out property <string> sync-status: "";
+    in-out property <bool> sync-auto: true;
+    in-out property <string> sync-add-text: "";
+    callback sync-now(string);       // peer id: one pull-merge-push now
+    callback sync-pair(string);      // peer id: ask a discovered device to pair
+    callback sync-forget(string);    // peer id: drop it from the table
+    callback sync-auto-toggled(bool);
+    callback sync-add(string);       // "ip" or "ip:port": find and pair by hand
     // true when the workspace has no pages: the empty state grows a CTA
     in-out property <bool> workspace-empty: false;
 
@@ -724,6 +747,11 @@ export global UIState {
     // command is anchored to a block that does not exist yet. This is that
     // panel's front door: make the first paragraph and put the caret in it.
     callback empty-page-started();
+    // The touch bar's "+": insert a block at the end of the open page and
+    // open the insert menu over it — the desktop "+" handle's affordance,
+    // placed where a thumb can reach it (M9 FEEDBACK). Nothing on the desktop
+    // fires it; the callback lives here so both shells keep one UIState.
+    callback insert-at-end-requested();
     callback open-link(string);
     callback palette-query-changed();
     callback palette-open-requested();

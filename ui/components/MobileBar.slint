@@ -1,6 +1,8 @@
-// The thumb row (M9.pre): the five things worth reaching without covering the
+// The thumb row (M9.pre): the things worth reaching without covering the
 // page. It exists only in touch mode, and it calls back into the same UIState
-// callbacks the desktop's Ctrl+… chords use, so it adds no Rust surface at all.
+// callbacks the desktop's Ctrl+… chords use, so it adds no Rust surface at
+// all — except its "+", which is the desktop "+" handle's insert menu moved
+// to where a thumb can reach it (M9 FEEDBACK: the phone had no "+" menu).
 
 import { Theme } from "../Theme.slint";
 import { Colors } from "../Colors.slint";
@@ -15,7 +17,7 @@ component BarItem inherits Rectangle {
 
     // `parent` is not reachable from a component's own root. The bar gives each
     // item an equal share of its width and full height at the use site
-    // (`width: parent.width / 5`); an explicit width is used instead of
+    // (`width: parent.width / 6`); an explicit width is used instead of
     // `horizontal-stretch` because this build does not honor a root-level
     // stretch for layout children. `vertical-stretch` below is honored and
     // claims the bar's full height.
@@ -76,7 +78,7 @@ export component MobileBar inherits Rectangle {
         spacing: 0px;
 
         BarItem {
-            width: parent.width / 5;
+            width: parent.width / 6;
             icon-name: "arrow-left";
             label: "Back";
             clicked => {
@@ -84,7 +86,7 @@ export component MobileBar inherits Rectangle {
             }
         }
         BarItem {
-            width: parent.width / 5;
+            width: parent.width / 6;
             icon-name: "arrow-right";
             label: "Forward";
             clicked => {
@@ -92,7 +94,7 @@ export component MobileBar inherits Rectangle {
             }
         }
         BarItem {
-            width: parent.width / 5;
+            width: parent.width / 6;
             icon-name: "panel-left";
             label: "Pages";
             clicked => {
@@ -100,15 +102,23 @@ export component MobileBar inherits Rectangle {
             }
         }
         BarItem {
-            width: parent.width / 5;
+            width: parent.width / 6;
             icon-name: "plus";
+            label: "Add";
+            clicked => {
+                UIState.insert-at-end-requested();
+            }
+        }
+        BarItem {
+            width: parent.width / 6;
+            icon-name: "page";
             label: "New";
             clicked => {
                 UIState.page-create-requested();
             }
         }
         BarItem {
-            width: parent.width / 5;
+            width: parent.width / 6;
             icon-name: "search";
             label: "Search";
             clicked => {

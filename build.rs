@@ -5,7 +5,23 @@ fn main() {
     // bisect compiler issues per component (see docs/DECISIONS.md debugging note).
     println!("cargo:rerun-if-env-changed=QUIRE_PROBE");
     let ui = std::env::var("QUIRE_PROBE").unwrap_or_else(|_| "ui/AppWindow.slint".into());
-    slint_build::compile(&ui).expect("Slint build failed");
+    // The Android shell compiles the same .slint tree with a fixed scale
+    // factor. The activity backend derives its scale from the device's
+    // density bucket (dpi / 160), and the tablets this app runs on report an
+    // mdpi-class bucket, so the desktop-sized layout lands at desktop
+    // physical sizes — 13 px body text and 40 px bars on a 10" screen, every
+    // touch target half the size a finger wants (M9 FEEDBACK: "默认比例太小").
+    // 1.5 lifts every logical px uniformly (fonts, rows, bars, popups): the
+    // 2000-px-wide surface becomes a ~1333-px logical one and the 44 px touch
+    // rows render at ~66 physical px. Compile-time on purpose — the runtime
+    // scale is the backend's alone (ADR-0096's "one compiled unit"), and
+    // slint-build applies it before any window exists.
+    let config = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        slint_build::CompilerConfiguration::new().with_scale_factor(1.5)
+    } else {
+        slint_build::CompilerConfiguration::new()
+    };
+    slint_build::compile_with_config(&ui, config).expect("Slint build failed");
 
     // The exe's shell identity only exists where there is an exe to carry it.
     // `embed-resource` asks the *host* for rc.exe, and the host is Windows when

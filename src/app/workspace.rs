@@ -14,6 +14,7 @@ pub const MAX_RECENTS: usize = 6;
 /// command palette.
 pub const BENCH_ID_BASE: i32 = 1000;
 
+#[derive(Clone)]
 pub struct Page {
     pub id: i32,
     pub title: String,
@@ -165,6 +166,67 @@ impl Workspace {
             }
             None => list.push(id),
         }
+    }
+
+    /// Insert a page row that arrived with its id already decided — the sync
+    /// merge renumbers remote rows against this session's watermark, so the
+    /// id the tree stores has to be the id the document and the store see.
+    /// Appends after the parent's (or the roots') last child; every other
+    /// field is the row's own. Returns the id it was given.
+    pub fn insert_persisted(&mut self, p: crate::core::Page) -> i32 {
+        let id = p.id.0 as i32;
+        self.next_id = self.next_id.max(id + 1);
+        let node = Page {
+            id,
+            title: p.title.clone(),
+            parent: p.parent.map(|v| v.0 as i32),
+            children: Vec::new(),
+            favorite: p.favorite,
+            expanded: p.expanded,
+            font: p.font,
+            full_width: p.full_width,
+            small_text: p.small_text,
+            icon: p.icon.clone(),
+            cover: p.cover,
+            locked: p.locked,
+            template: p.template,
+            search_text: String::new(),
+        };
+        self.pages.insert(id, node);
+        if !p.template {
+            self.attach(id, p.parent.map(|v| v.0 as i32), None);
+        }
+        id
+    }
+
+    /// Set the favorite star to an exact value (the sync apply knows the
+    /// merged fact; `toggle_favorite` only knows the click).
+    pub fn set_favorite(&mut self, id: i32, v: bool) {
+        if let Some(node) = self.pages.get_mut(&id) {
+            node.favorite = v;
+        }
+    }
+
+    /// Set the tree's expanded flag to an exact value (same reason).
+    pub fn set_expanded(&mut self, id: i32, v: bool) {
+        if let Some(node) = self.pages.get_mut(&id) {
+            node.expanded = v;
+        }
+    }
+
+    /// Reserve the next page id without creating anything — the sync apply
+    /// renumbers an incoming row before the tree sees it.
+    pub fn reserve_page_id(&mut self) -> i32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// Every page row, templates included, in no particular order — the sync
+    /// export's read of the tree. Order keys live in `app::state`'s own map,
+    /// so the caller pairs the rows with that map.
+    pub fn page_rows(&self) -> Vec<Page> {
+        self.pages.values().cloned().collect()
     }
 
     /// Create a page under `parent` (root when None) and return its id.
@@ -969,7 +1031,9 @@ mod tests {
         assert_eq!(w.cover_of(105), None, "the sample tree has no covers");
         assert_eq!(
             w.cover_ids(),
-            Vec::new(),
+            // serde_json's PartialEq<i64> for Value makes the bare `Vec::new()`
+            // ambiguous from the sync module's dependency edge
+            Vec::<i64>::new(),
             "so the reclaim has nothing to hear from the tree yet"
         );
         let seven = Some(crate::core::AttachmentId(7));

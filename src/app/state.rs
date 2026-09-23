@@ -1576,8 +1576,10 @@ impl AppState {
         self.settings
             .borrow()
             .get("theme")
-            .map(|v| v == "dark")
-            .unwrap_or(false)
+            // No stored pick defaults to dark (M9 FEEDBACK: dark is the theme
+            // both platforms should open in); a stored "light" still wins.
+            .map(|v| v != "light")
+            .unwrap_or(true)
     }
 
     // ---- in-page find (Ctrl+F; data layer = Track B's FindSession) ----
@@ -7479,7 +7481,7 @@ impl AppState {
     /// follows. Nothing here writes, and nothing recurses — the peers are handed
     /// to `db_refresh` directly, so a page of three databases costs at most
     /// three reads for one edit.
-    fn db_refresh_page(&self, skip: Option<i32>) {
+    pub fn db_refresh_page(&self, skip: Option<i32>) {
         let page = core_page_id(self.open_page.get());
         let peers: Vec<i32> = {
             let doc = self.doc.borrow();
@@ -11665,6 +11667,868 @@ fn fuzzy_subsequence(query: &str, target: &str) -> bool {
         .all(|q| it.any(|t| t == q))
 }
 
+// ─── LAN sync (`crate::sync`) ────────────────────────────────────────────────
+//
+// The session is UI-thread property, so the sync engine's jobs land here: the
+// export builds the wire snapshot out of the live session, and the apply runs
+// the three-way merge against the session's own watermarks and walks the
+// merged snapshot back in through the same Change lists every other write
+// uses. Identity, the peers table, the log and the per-peer shadow all live
+// in the settings table — device-local by policy (the snapshot never carries
+// settings rows), which is exactly what these keys want.
+
+impl AppState {
+    // ---- settings-backed state the engine and the dialog read ----
+
+    fn sync_setting(&self, key: &str) -> Option<String> {
+        self.settings.borrow().get(key).cloned()
+    }
+
+    /// This device's identity, minted once and remembered.
+    pub fn sync_self_info(&self) -> crate::sync::engine::DeviceInfo {
+        let mut id = self.sync_setting("sync.device-id").unwrap_or_default();
+        if id.is_empty() {
+            // No uuid crate: the wall clock and this session's own address
+            // are two inputs a second device on the LAN will not share.
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            id = format!(
+                "{}-{:x}",
+                crate::sync::engine::DeviceInfo::kind(),
+                nanos ^ (self as *const AppState as u64)
+            );
+            self.record_setting("sync.device-id", &id);
+        }
+        let mut name = self.sync_setting("sync.device-name").unwrap_or_default();
+        if name.is_empty() {
+            name = crate::sync::engine::DeviceInfo::default_name(&id);
+            self.record_setting("sync.device-name", &name);
+        }
+        crate::sync::engine::DeviceInfo {
+            id,
+            name,
+            kind: crate::sync::engine::DeviceInfo::kind(),
+            port: crate::sync::SYNC_PORT,
+        }
+    }
+
+    pub fn sync_peers(&self) -> Vec<crate::sync::engine::PeerRecord> {
+        self.sync_setting("sync.peers")
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn sync_set_peers(&self, peers: &[crate::sync::engine::PeerRecord]) {
+        let json = serde_json::to_string(peers).unwrap_or_else(|_| "[]".into());
+        self.record_setting("sync.peers", &json);
+    }
+
+    pub fn sync_upsert_peer(&self, rec: crate::sync::engine::PeerRecord) {
+        let mut peers = self.sync_peers();
+        match peers.iter_mut().find(|p| p.id == rec.id) {
+            Some(slot) => *slot = rec,
+            None => peers.push(rec),
+        }
+        self.sync_set_peers(&peers);
+    }
+
+    /// Record a sighting (or a pairing) of a device found on the LAN: the
+    /// peers table keeps what it already knew — the pairing, the last sync —
+    /// and moves with the address the announcement came from.
+    pub fn sync_note_device(
+        &self,
+        id: &str,
+        name: &str,
+        kind: &str,
+        ip: &str,
+        port: u16,
+        paired: Option<bool>,
+    ) {
+        if id.is_empty() {
+            return;
+        }
+        let now = crate::sync::engine::now_unix();
+        let mut peers = self.sync_peers();
+        match peers.iter_mut().find(|p| p.id == id) {
+            Some(p) => {
+                if !name.is_empty() {
+                    p.name = name.to_string();
+                }
+                if !kind.is_empty() {
+                    p.kind = kind.to_string();
+                }
+                if !ip.is_empty() {
+                    p.ip = ip.to_string();
+                }
+                if port != 0 {
+                    p.port = port;
+                }
+                p.last_seen = now;
+                if let Some(v) = paired {
+                    p.paired = v;
+                }
+            }
+            None => peers.push(crate::sync::engine::PeerRecord {
+                id: id.to_string(),
+                name: name.to_string(),
+                kind: kind.to_string(),
+                ip: ip.to_string(),
+                port,
+                paired: paired.unwrap_or(false),
+                last_seen: now,
+                last_sync: String::new(),
+            }),
+        }
+        self.sync_set_peers(&peers);
+    }
+
+    /// The last word on one sync attempt: the peers table's `last_sync` moves
+    /// only on success.
+    pub fn sync_note_synced(&self, peer_id: &str, ok: bool) {
+        let mut peers = self.sync_peers();
+        let now = crate::sync::engine::now_unix();
+        if let Some(p) = peers.iter_mut().find(|p| p.id == peer_id) {
+            p.last_seen = now;
+            if ok {
+                p.last_sync = crate::sync::engine::now_rfc3339();
+            }
+        }
+        self.sync_set_peers(&peers);
+    }
+
+    pub fn sync_forget_peer(&self, peer_id: &str) {
+        let peers: Vec<crate::sync::engine::PeerRecord> = self
+            .sync_peers()
+            .into_iter()
+            .filter(|p| p.id != peer_id)
+            .collect();
+        self.sync_set_peers(&peers);
+        self.record_setting(
+            &format!("sync.shadow.{peer_id}"),
+            "",
+        );
+    }
+
+    pub fn sync_log(&self) -> Vec<crate::sync::engine::LogLine> {
+        self.sync_setting("sync.log")
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn sync_log_push(&self, peer: &str, ok: bool, message: &str) {
+        let mut log = self.sync_log();
+        log.push(crate::sync::engine::LogLine {
+            at: crate::sync::engine::now_rfc3339(),
+            peer: peer.to_string(),
+            ok,
+            message: message.to_string(),
+        });
+        let cut = log.len().saturating_sub(50);
+        log.drain(..cut);
+        let json = serde_json::to_string(&log).unwrap_or_else(|_| "[]".into());
+        self.record_setting("sync.log", &json);
+    }
+
+    /// (auto-sync on, interval seconds) from the settings rows.
+    pub fn sync_config(&self) -> (bool, u64) {
+        let auto = self
+            .sync_setting("sync.auto")
+            .map(|v| v == "1")
+            .unwrap_or(true);
+        let interval = self
+            .sync_setting("sync.interval")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60)
+            .max(15);
+        (auto, interval)
+    }
+
+    pub fn sync_set_auto(&self, on: bool) {
+        self.record_setting("sync.auto", if on { "1" } else { "0" });
+    }
+
+    fn sync_shadow(&self, peer_id: &str) -> Option<crate::sync::model::SyncSnapshot> {
+        self.sync_setting(&format!("sync.shadow.{peer_id}"))
+            .and_then(|v| crate::sync::model::SyncSnapshot::from_json(&v).ok())
+    }
+
+    fn sync_store_shadow(&self, peer_id: &str, snap: &crate::sync::model::SyncSnapshot) {
+        self.record_setting(
+            &format!("sync.shadow.{peer_id}"),
+            &snap.to_json(),
+        );
+    }
+
+    // ---- export ----
+
+    /// The whole workspace as the wire sees it: pages from the tree, blocks
+    /// (with their marks) from the document, attachment rows from the map,
+    /// and the database layer's schema from the in-memory catalog plus its
+    /// records and cell values read straight out of the store.
+    pub fn sync_export(&self) -> crate::sync::model::SyncSnapshot {
+        use crate::sync::model::{SAttachment, SBlock, SPage, SValue, SyncSnapshot};
+        let mut snap = SyncSnapshot::default();
+        let me = self.sync_self_info();
+        snap.device_id = me.id;
+        snap.device = me.name;
+
+        {
+            let ws = self.workspace.borrow();
+            let orders = self.page_order.borrow();
+            for row in ws.page_rows() {
+                let core = crate::core::Page {
+                    id: crate::core::PageId(row.id as u64),
+                    title: row.title.clone(),
+                    parent: row.parent.map(|v| crate::core::PageId(v as u64)),
+                    order: orders
+                        .get(&row.id)
+                        .copied()
+                        .unwrap_or(crate::core::OrderKey::FIRST),
+                    favorite: row.favorite,
+                    expanded: row.expanded,
+                    font: row.font,
+                    full_width: row.full_width,
+                    small_text: row.small_text,
+                    icon: row.icon.clone(),
+                    cover: row.cover,
+                    locked: row.locked,
+                    template: row.template,
+                };
+                snap.pages.push(SPage::from(&core));
+            }
+        }
+        {
+            let doc = self.doc.borrow();
+            for b in doc.all_blocks() {
+                snap.blocks.push(SBlock::from(b));
+            }
+        }
+        for att in self.attachments.borrow().values() {
+            snap.attachments.push(SAttachment::from(att));
+        }
+
+        let catalog = self.databases.borrow().clone();
+        snap.databases = crate::sync::model::catalog_schema(&catalog);
+        if let Some(repo) = &self.repo {
+            for row in &mut snap.databases {
+                let db_id = crate::core::database::DatabaseId(row.id);
+                let list = match repo.records_named(db_id, "", usize::MAX) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let ids: Vec<crate::core::database::RecordId> = list
+                    .iter()
+                    .map(|(id, _)| crate::core::database::RecordId(*id))
+                    .collect();
+                for rid in &ids {
+                    if let Ok(Some(rec)) = repo.record(*rid) {
+                        row.records.push(crate::sync::model::SRecord {
+                            id: rec.id.0,
+                            db: rec.db.0,
+                            page: rec.page.map(|p| p.0),
+                            ord: rec.ord.0,
+                        });
+                    }
+                }
+                for prop in &row.properties {
+                    let kind = crate::core::database::PropertyKind::try_from_str(&prop.kind);
+                    if kind.map(|k| k.is_computed() || k.is_derived()).unwrap_or(true) {
+                        continue;
+                    }
+                    let pid = crate::core::database::PropertyId(prop.id);
+                    if let Ok(vals) = repo.values_of(&ids, pid) {
+                        for (rid, v) in vals {
+                            row.values.push(SValue::from_core(
+                                crate::core::database::RecordId(rid),
+                                pid,
+                                &v,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        snap
+    }
+
+    // ---- apply ----
+
+    /// Merge a peer's snapshot into the session — three-way, against the
+    /// shadow this peer last agreed — and apply the result through the same
+    /// Change lists every other write uses. Answers the merged snapshot: the
+    /// caller pushes it back to the peer and stores it as this peer's shadow.
+    pub fn sync_apply_remote(
+        &self,
+        remote: &crate::sync::model::SyncSnapshot,
+        bytes: &[(u64, Vec<u8>)],
+        peer: &crate::sync::engine::PeerRecord,
+    ) -> Result<crate::sync::model::SyncSnapshot, String> {
+        let local = self.sync_export();
+        let shadow = self.sync_shadow(&peer.id);
+        let peer_name = if remote.device.is_empty() {
+            peer.name.clone()
+        } else {
+            remote.device.clone()
+        };
+
+        // the merge draws fresh ids from the session's own watermarks, so a
+        // renumbered row can never collide with what this session mints next
+        let mut ws_guard = self.workspace.borrow_mut();
+        let mut doc_guard = self.doc.borrow_mut();
+        let att_cell = &self.next_attachment_id;
+        let db_cell = &self.next_db_id;
+        let prop_cell = &self.next_property_id;
+        let rec_cell = &self.next_record_id;
+        let view_cell = &self.next_view_id;
+        let mut next_page = || ws_guard.reserve_page_id() as u64;
+        let mut next_block = || doc_guard.reserve_block_ids(1);
+        let mut next_att = || {
+            let v = att_cell.get() as u64;
+            att_cell.set(v as i64 + 1);
+            v
+        };
+        let mut next_db = || {
+            let v = db_cell.get();
+            db_cell.set(v + 1);
+            v
+        };
+        let mut next_prop = || {
+            let v = prop_cell.get();
+            prop_cell.set(v + 1);
+            v
+        };
+        let mut next_rec = || {
+            let v = rec_cell.get();
+            rec_cell.set(v + 1);
+            v
+        };
+        let mut next_view = || {
+            let v = view_cell.get();
+            view_cell.set(v + 1);
+            v
+        };
+        let mut ctx = crate::sync::merge::MergeCtx {
+            next_page: &mut next_page,
+            next_block: &mut next_block,
+            next_attachment: &mut next_att,
+            next_db: &mut next_db,
+            next_property: &mut next_prop,
+            next_record: &mut next_rec,
+            next_view: &mut next_view,
+        };
+        let outcome = crate::sync::merge::merge(&local, shadow.as_ref(), remote, &peer_name, &mut ctx);
+        let conflicts = outcome.conflicts.clone();
+        let att_remap = outcome.attachment_remap.clone();
+        let merged = outcome.merged;
+        drop(ctx);
+        drop(doc_guard);
+        drop(ws_guard);
+
+        // ---- attachments: bytes on disk first, then the rows ----
+        let mut byte_map: std::collections::HashMap<u64, &[u8]> = std::collections::HashMap::new();
+        for (r, data) in bytes {
+            let final_id = att_remap
+                .iter()
+                .find(|(rr, _)| rr == r)
+                .map(|(_, ll)| *ll)
+                .unwrap_or(*r);
+            byte_map.insert(final_id, data);
+        }
+        let mut att_changes: Vec<Change> = Vec::new();
+        {
+            let mut atts = self.attachments.borrow_mut();
+            for row in &merged.attachments {
+                if atts.contains_key(&(row.id as i64)) {
+                    continue;
+                }
+                if let Some(data) = byte_map.get(&row.id) {
+                    let id = crate::core::types::AttachmentId(row.id);
+                    let stored = if row.mime.starts_with("image/") {
+                        // the same path a picked picture takes: decode, write
+                        // the file, build the preview — the sender's names
+                        // are then rebuilt from the (possibly renumbered) id
+                        self.store.import_bytes(id, &row.name, data).ok()
+                    } else {
+                        None
+                    };
+                    let row_final = stored.unwrap_or_else(|| {
+                        // a file (or an undecodable "image"): write the raw
+                        // bytes under the row's own names
+                        let dir = self.store.dir();
+                        let _ = std::fs::create_dir_all(dir);
+                        if !row.file.is_empty() {
+                            let _ = std::fs::write(dir.join(&row.file), data);
+                        }
+                        row.to_core()
+                    });
+                    atts.insert(row.id as i64, row_final.clone());
+                    att_changes.push(Change::AttachmentAdded(row_final));
+                }
+                // no bytes and none stored: the row still lands (a picture
+                // block renders its missing-file state; the bytes arrive on
+                // the next cycle that fetches them)
+            }
+        }
+        if !att_changes.is_empty() {
+            self.record(att_changes);
+        }
+
+        // ---- pages: inserts and field diffs; deletes decided by the merge ----
+        let merged_page_ids: std::collections::HashSet<u64> =
+            merged.pages.iter().map(|p| p.id).collect();
+        let local_page_ids: Vec<i32> = self
+            .workspace
+            .borrow()
+            .page_rows()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        for id in local_page_ids {
+            if !merged_page_ids.contains(&(id as u64))
+                && self.workspace.borrow().contains(id)
+            {
+                self.delete_page(id);
+            }
+        }
+        for sp in &merged.pages {
+            let pid = sp.id as i32;
+            if !self.workspace.borrow().contains(pid) {
+                let core = sp.to_core();
+                self.workspace.borrow_mut().insert_persisted(core.clone());
+                self.page_order
+                    .borrow_mut()
+                    .insert(pid, core.order);
+                self.record(vec![Change::PageCreated(core)]);
+                continue;
+            }
+            let cur = self.workspace.borrow().get(pid).cloned();
+            let Some(cur) = cur else { continue };
+            if cur.title != sp.title {
+                self.rename_page(pid, &sp.title);
+            }
+            let cur_parent = cur.parent.map(|v| v as u64);
+            if cur_parent != sp.parent || self.page_order.borrow().get(&pid).copied().map(|k| k.0) != Some(sp.ord) {
+                self.workspace.borrow_mut().move_page(pid, sp.parent.map(|v| v as i32), None);
+                self.page_order
+                    .borrow_mut()
+                    .insert(pid, crate::core::OrderKey(sp.ord));
+                self.record(vec![Change::PageMoved {
+                    id: crate::core::PageId(sp.id),
+                    parent: sp.parent.map(crate::core::PageId),
+                    order: crate::core::OrderKey(sp.ord),
+                }]);
+            }
+            if cur.favorite != sp.favorite {
+                self.workspace.borrow_mut().set_favorite(pid, sp.favorite);
+                self.record(vec![Change::PageFavoriteSet {
+                    id: crate::core::PageId(sp.id),
+                    favorite: sp.favorite,
+                }]);
+            }
+            if cur.expanded != sp.expanded {
+                self.workspace.borrow_mut().set_expanded(pid, sp.expanded);
+                self.record(vec![Change::PageExpandedSet {
+                    id: crate::core::PageId(sp.id),
+                    expanded: sp.expanded,
+                }]);
+            }
+            if cur.font != sp.to_core().font {
+                self.set_page_font(pid, sp.to_core().font);
+            }
+            if cur.full_width != sp.full_width || cur.small_text != sp.small_text {
+                self.workspace
+                    .borrow_mut()
+                    .set_layout(pid, sp.full_width, sp.small_text);
+                self.record(vec![Change::PageLayoutSet {
+                    id: crate::core::PageId(sp.id),
+                    full_width: sp.full_width,
+                    small_text: sp.small_text,
+                }]);
+            }
+            if cur.icon != sp.icon {
+                self.set_page_icon(pid, &sp.icon);
+            }
+            if cur.cover != sp.to_core().cover {
+                self.set_page_cover(pid, sp.to_core().cover);
+            }
+            if cur.locked != sp.locked {
+                self.set_page_locked(pid, sp.locked);
+            }
+        }
+
+        // ---- blocks: one batch per page, applied to the document and the
+        // store through the same raw-Change path an import uses ----
+        for page in &merged.pages {
+            let pid = crate::core::PageId(page.id);
+            if !self.workspace.borrow().contains(page.id as i32) {
+                continue;
+            }
+            let mut batch: Vec<Change> = Vec::new();
+            let local_rows: std::collections::HashMap<u64, crate::sync::model::SBlock> = {
+                let doc = self.doc.borrow();
+                doc.page_blocks(pid)
+                    .iter()
+                    .map(|b| (b.id.0, crate::sync::model::SBlock::from(b)))
+                    .collect()
+            };
+            let merged_here: Vec<&crate::sync::model::SBlock> = merged
+                .blocks
+                .iter()
+                .filter(|b| b.page == page.id)
+                .collect();
+            let merged_ids: std::collections::HashSet<u64> =
+                merged_here.iter().map(|b| b.id).collect();
+
+            // deletes, children before their parents (both cascades recurse,
+            // but listing the subtree bottom-up keeps the memory step honest)
+            let mut gone: Vec<u64> = local_rows
+                .keys()
+                .copied()
+                .filter(|id| !merged_ids.contains(id))
+                .collect();
+            gone.sort_unstable_by(|a, b| {
+                let depth = |mut id: u64| -> usize {
+                    let mut d = 0;
+                    while let Some(p) = local_rows.get(&id).and_then(|b| b.parent) {
+                        id = p;
+                        d += 1;
+                    }
+                    d
+                };
+                depth(*b).cmp(&depth(*a)).then(b.cmp(a))
+            });
+            for id in gone {
+                batch.push(Change::BlockDeleted {
+                    id: crate::core::BlockId(id),
+                });
+            }
+
+            for mb in &merged_here {
+                match local_rows.get(&mb.id) {
+                    None => batch.push(Change::BlockInserted(mb.to_core())),
+                    Some(lb) => {
+                        if *lb != **mb {
+                            sync_block_diff(lb, mb, &mut batch);
+                        }
+                    }
+                }
+            }
+            if !batch.is_empty() {
+                {
+                    let mut doc = self.doc.borrow_mut();
+                    doc.apply(&batch);
+                }
+                self.record(batch);
+            }
+        }
+
+        // ---- databases: schema rows go through the catalog's own funnel
+        // (`record` learns every schema change), records and cells ride the
+        // same batch. The diff runs against a clone of the catalog that the
+        // loop keeps updated, so one borrow spans the whole walk. ----
+        {
+            let mut batch: Vec<Change> = Vec::new();
+            let mut known = self.databases.borrow().clone();
+            for db in &merged.databases {
+                let db_id = crate::core::database::DatabaseId(db.id);
+                if known.database(db_id).is_none() {
+                    batch.push(Change::DatabaseCreated(db.to_core_entity()));
+                    known.databases.push(db.to_core_entity());
+                    for p in &db.properties {
+                        batch.push(Change::PropertyAdded(p.to_core()));
+                        known.properties.push(p.to_core());
+                    }
+                    for v in &db.views {
+                        batch.push(Change::ViewAdded(v.to_core()));
+                        known.views.push(v.to_core());
+                    }
+                    continue;
+                }
+                if let Some(cur) = known.database(db_id) {
+                    if cur.name != db.name {
+                        batch.push(Change::DatabaseRenamed {
+                            id: db_id,
+                            name: db.name.clone(),
+                        });
+                    }
+                    if cur.template != db.template {
+                        batch.push(Change::DatabaseTemplateSet {
+                            id: db_id,
+                            template: db.template.clone(),
+                        });
+                    }
+                }
+                for p in &db.properties {
+                    match known.properties.iter_mut().find(|x| x.id.0 == p.id) {
+                        None => {
+                            batch.push(Change::PropertyAdded(p.to_core()));
+                            known.properties.push(p.to_core());
+                        }
+                        Some(cur) => {
+                            if cur.name != p.name {
+                                batch.push(Change::PropertyRenamed {
+                                    id: crate::core::database::PropertyId(p.id),
+                                    name: p.name.clone(),
+                                });
+                                cur.name = p.name.clone();
+                            }
+                            if cur.kind.as_str() != p.kind {
+                                batch.push(Change::PropertyKindSet {
+                                    id: crate::core::database::PropertyId(p.id),
+                                    kind: p.to_core().kind,
+                                });
+                                cur.kind = p.to_core().kind;
+                            }
+                            if cur.config != p.config {
+                                batch.push(Change::PropertyConfigSet {
+                                    id: crate::core::database::PropertyId(p.id),
+                                    config: p.config.clone(),
+                                });
+                                cur.config = p.config.clone();
+                            }
+                            if cur.ord.0 != p.ord {
+                                batch.push(Change::PropertyOrdSet {
+                                    id: crate::core::database::PropertyId(p.id),
+                                    ord: crate::core::OrderKey(p.ord),
+                                });
+                                cur.ord = crate::core::OrderKey(p.ord);
+                            }
+                        }
+                    }
+                }
+                for v in &db.views {
+                    match known.views.iter_mut().find(|x| x.id.0 == v.id) {
+                        None => {
+                            batch.push(Change::ViewAdded(v.to_core()));
+                            known.views.push(v.to_core());
+                        }
+                        Some(cur) => {
+                            if cur.name != v.name {
+                                batch.push(Change::ViewRenamed {
+                                    id: crate::core::database::ViewId(v.id),
+                                    name: v.name.clone(),
+                                });
+                                cur.name = v.name.clone();
+                            }
+                            if cur.layout.as_str() != v.layout {
+                                batch.push(Change::ViewLayoutSet {
+                                    id: crate::core::database::ViewId(v.id),
+                                    layout: v.to_core().layout,
+                                });
+                                cur.layout = v.to_core().layout;
+                            }
+                            if cur.definition != v.definition {
+                                batch.push(Change::ViewDefinitionSet {
+                                    id: crate::core::database::ViewId(v.id),
+                                    definition: v.definition.clone(),
+                                });
+                                cur.definition = v.definition.clone();
+                            }
+                            if cur.ord.0 != v.ord {
+                                batch.push(Change::ViewOrdSet {
+                                    id: crate::core::database::ViewId(v.id),
+                                    ord: crate::core::OrderKey(v.ord),
+                                });
+                                cur.ord = crate::core::OrderKey(v.ord);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // records and cells: the store is their only home, so "is this
+            // row known" comes from the local snapshot's tables
+            let local_record_ids: std::collections::HashSet<u64> = local
+                .databases
+                .iter()
+                .flat_map(|d| d.records.iter().map(|r| r.id))
+                .collect();
+            let local_values: std::collections::HashMap<(u64, u64), &crate::sync::model::SValue> =
+                local
+                    .databases
+                    .iter()
+                    .flat_map(|d| d.values.iter().map(|v| ((v.record, v.property), v)))
+                    .collect();
+            let mut merged_record_keys: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            let mut merged_value_keys: std::collections::HashSet<(u64, u64)> =
+                std::collections::HashSet::new();
+            for d in &merged.databases {
+                for r in &d.records {
+                    merged_record_keys.insert(r.id);
+                    match local_record_ids.contains(&r.id) {
+                        false => batch.push(Change::RecordCreated(r.to_core_record())),
+                        true => {
+                            if let Some(cur) =
+                                local.databases.iter().flat_map(|x| x.records.iter()).find(|x| x.id == r.id)
+                            {
+                                if cur.ord != r.ord {
+                                    batch.push(Change::RecordOrdSet {
+                                        id: crate::core::database::RecordId(r.id),
+                                        ord: crate::core::OrderKey(r.ord),
+                                    });
+                                }
+                                if cur.page != r.page {
+                                    batch.push(Change::RecordPageSet {
+                                        id: crate::core::database::RecordId(r.id),
+                                        page: r.page.map(crate::core::PageId),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                for v in &d.values {
+                    merged_value_keys.insert((v.record, v.property));
+                    match local_values.get(&(v.record, v.property)) {
+                        Some(cur) if *cur == v => {}
+                        _ => batch.push(Change::CellSet {
+                            record: crate::core::database::RecordId(v.record),
+                            property: crate::core::database::PropertyId(v.property),
+                            value: v.to_core(),
+                        }),
+                    }
+                }
+            }
+            // a cell the merged snapshot dropped (deleted remotely over an
+            // unchanged local copy) goes back to Empty — the one
+            // representation of "no value" (ADR-0062)
+            for (key, _) in &local_values {
+                if !merged_value_keys.contains(key) {
+                    batch.push(Change::CellSet {
+                        record: crate::core::database::RecordId(key.0),
+                        property: crate::core::database::PropertyId(key.1),
+                        value: crate::core::database::CellValue::Empty,
+                    });
+                }
+            }
+            // a record the merged snapshot dropped over an unchanged local
+            // copy is deleted remotely; the merge's delete list said so
+            let local_record_rows: Vec<&crate::sync::model::SRecord> = local
+                .databases
+                .iter()
+                .flat_map(|d| d.records.iter())
+                .collect();
+            for r in &local_record_rows {
+                if !merged_record_keys.contains(&r.id) {
+                    batch.push(Change::RecordDeleted {
+                        id: crate::core::database::RecordId(r.id),
+                    });
+                }
+            }
+            if !batch.is_empty() {
+                self.record(batch);
+            }
+        }
+
+        // the merged snapshot becomes *this* device's when it is pushed back:
+        // the peer keys its shadow by the sender's identity, and the sender
+        // of that push is us
+        let mut merged = merged;
+        let me = self.sync_self_info();
+        merged.device_id = me.id;
+        merged.device = me.name;
+        // the shadow becomes what the two sides now agree on
+        self.sync_store_shadow(&peer.id, &merged);
+        if !conflicts.is_empty() {
+            for line in conflicts.iter().take(3) {
+                self.sync_log_push(&peer.name, false, line);
+            }
+        }
+        Ok(merged)
+    }
+}
+
+/// The per-field diff of two wire rows of one block: every difference is one
+/// Change, and the caller applies the batch to both the document and the
+/// store in one transaction.
+fn sync_block_diff(
+    lb: &crate::sync::model::SBlock,
+    mb: &crate::sync::model::SBlock,
+    batch: &mut Vec<Change>,
+) {
+    use crate::core::types::BlockId;
+    let id = BlockId(mb.id);
+    if lb.parent != mb.parent || lb.ord != mb.ord {
+        batch.push(Change::BlockMoved {
+            id,
+            parent: mb.parent.map(BlockId),
+            order: crate::core::OrderKey(mb.ord),
+        });
+    }
+    if lb.text != mb.text {
+        batch.push(Change::BlockTextSet {
+            id,
+            text: mb.text.clone(),
+        });
+    }
+    if lb.kind != mb.kind {
+        batch.push(Change::BlockKindSet {
+            id,
+            kind: mb.to_core().kind,
+        });
+    }
+    if lb.checked != mb.checked {
+        batch.push(Change::BlockCheckedSet { id, checked: mb.checked });
+    }
+    if lb.folded != mb.folded {
+        batch.push(Change::BlockFoldedSet { id, folded: mb.folded });
+    }
+    if lb.marks != mb.marks {
+        batch.push(Change::BlockMarksSet {
+            id,
+            marks: mb.to_core().marks,
+        });
+    }
+    if lb.color != mb.color || lb.background != mb.background {
+        batch.push(Change::BlockColorSet {
+            id,
+            color: mb.to_core().color,
+            background: mb.to_core().background,
+        });
+    }
+    if lb.page_ref != mb.page_ref {
+        batch.push(Change::BlockRefSet {
+            id,
+            page: mb.page_ref.map(crate::core::types::PageId),
+        });
+    }
+    if lb.sync_ref != mb.sync_ref {
+        batch.push(Change::BlockSyncSet {
+            id,
+            source: mb.sync_ref.map(BlockId),
+        });
+    }
+    if lb.attachment != mb.attachment {
+        batch.push(Change::BlockAttachmentSet {
+            id,
+            attachment: mb.attachment.map(crate::core::types::AttachmentId),
+        });
+    }
+    if lb.img_percent != mb.img_percent {
+        batch.push(Change::BlockImageWidthSet {
+            id,
+            percent: mb.img_percent,
+        });
+    }
+    if lb.columns != mb.columns {
+        batch.push(Change::BlockColumnsSet { id, columns: mb.columns });
+    }
+    if lb.lang != mb.lang {
+        batch.push(Change::BlockLangSet {
+            id,
+            lang: mb.to_core().lang,
+        });
+    }
+    if lb.db_ref != mb.db_ref {
+        batch.push(Change::BlockDbRefSet {
+            id,
+            db: mb.db_ref.map(crate::core::database::DatabaseId),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -13432,6 +14296,92 @@ mod tests {
 
     fn plain_args() -> super::HandleArgs {
         super::HandleArgs { blocks: 0, auto_exit_secs: 0.0, bench_pages: 0, pictures: 0, marks: 0, code: 0 }
+    }
+
+    /// A peer row for the sync tests: the two peers are the two sessions.
+    fn peer(id: &str, name: &str) -> crate::sync::engine::PeerRecord {
+        crate::sync::engine::PeerRecord {
+            id: id.into(),
+            name: name.into(),
+            kind: "windows".into(),
+            ip: "127.0.0.1".into(),
+            port: crate::sync::SYNC_PORT,
+            paired: true,
+            last_seen: 0,
+            last_sync: String::new(),
+        }
+    }
+
+    /// The whole two-device dance, through the session's own export/apply:
+    /// A's new page lands on B, B's rename of it comes back to A, and the
+    /// two halves agree about the rows — which is the one thing the merge
+    /// exists to make true.
+    #[test]
+    fn a_sync_snapshot_lands_in_another_session_and_an_edit_flows_back() {
+        use crate::core::BlockKind as K;
+
+        let dir_a = crate::testing::ScratchDir::new("sync-sid-a");
+        let dir_b = crate::testing::ScratchDir::new("sync-sid-b");
+        let a = super::AppState::new(&plain_args(), Some(scratch_repo(&dir_a)));
+        let b = super::AppState::new(&plain_args(), Some(scratch_repo(&dir_b)));
+        let pa = peer("dev-desk", "Desk");
+        let pb = peer("dev-phone", "Phone");
+
+        // A writes a page; B pulls it
+        let page = a.create_page(None);
+        a.rename_page(page, "From the desk");
+        let line = a
+            .exec_on_open_page(crate::core::Command::AppendBlock {
+                kind: K::Paragraph,
+                text: "written on A".into(),
+            })
+            .as_deref()
+            .and_then(find_inserted_block_id)
+            .expect("a line to write on");
+        assert!(line > 0);
+
+        let merged_b = b
+            .sync_apply_remote(&a.sync_export(), &[], &pa)
+            .expect("A's snapshot merges into B");
+        assert!(merged_b.pages.iter().any(|p| p.title == "From the desk"));
+        let landed = b
+            .workspace
+            .borrow()
+            .page_rows()
+            .into_iter()
+            .find(|p| p.title == "From the desk")
+            .map(|p| p.id)
+            .expect("the page arrived");
+        let texts: Vec<String> = b
+            .doc
+            .borrow()
+            .page_blocks(crate::core::PageId(landed as u64))
+            .iter()
+            .map(|bl| bl.text.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t == "written on A"), "{texts:?}");
+
+        // …and A agrees with B once (which is what arms the shadow the next
+        // merge resolves against), then B renames the page
+        a.sync_apply_remote(&b.sync_export(), &[], &pb)
+            .expect("B's first answer merges into A");
+        b.rename_page(landed, "Renamed on the phone");
+
+        let merged_a = a
+            .sync_apply_remote(&b.sync_export(), &[], &pb)
+            .expect("B's snapshot merges into A");
+        assert!(
+            merged_a.pages.iter().any(|p| p.title == "Renamed on the phone"),
+            "the rename is in the merged answer"
+        );
+        let on_a = a
+            .workspace
+            .borrow()
+            .page_rows()
+            .into_iter()
+            .find(|p| p.id == page)
+            .map(|p| p.title.clone());
+        assert_eq!(on_a.as_deref(), Some("Renamed on the phone"));
     }
 
     /// A fresh session on a real database: one page with `n` pictures on it,

@@ -65,6 +65,297 @@ fn ask(g: &UIState<'_>, picker: crate::platform::picker::Picker) -> Option<std::
     }
 }
 
+// ─── LAN sync (crate::sync) ─────────────────────────────────────────────────
+//
+// The engine (`crate::sync::engine`) owns the sockets and the worker thread;
+// this is its UI half: the pump that answers its jobs on this thread (the
+// session is `Rc`, so nothing else may touch it), the settings dialog's rows,
+// and the five callbacks that dialog fires.
+
+/// Start the engine and the pump. Called once from `wire`.
+fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
+    let me = state.sync_self_info();
+    let (job_tx, job_rx) = std::sync::mpsc::channel::<crate::sync::engine::Job>();
+    let cmd_tx = crate::sync::engine::Engine::start(me, job_tx);
+
+    // the dialog's own switch and rows, pushed once at wire time
+    {
+        let (auto, _) = state.sync_config();
+        ui.global::<UIState>().set_sync_auto(auto);
+        refresh_sync_ui(&ui.global::<UIState>(), state);
+    }
+
+    {
+        let gw = ui.global::<UIState>().as_weak();
+        let s = state.clone();
+        let cmd = cmd_tx.clone();
+        ui.global::<UIState>().on_sync_now(move |id| {
+            let g = gw.upgrade().unwrap();
+            if let Some(peer) = s.sync_peers().into_iter().find(|p| p.id == id.as_str()) {
+                g.set_sync_status(format!("Syncing with {}…", peer.name).into());
+                let _ = cmd.send(crate::sync::engine::Cmd::SyncWith(peer));
+            }
+        });
+    }
+    {
+        let gw = ui.global::<UIState>().as_weak();
+        let s = state.clone();
+        let cmd = cmd_tx.clone();
+        ui.global::<UIState>().on_sync_pair(move |id| {
+            let g = gw.upgrade().unwrap();
+            if let Some(peer) = s.sync_peers().into_iter().find(|p| p.id == id.as_str()) {
+                g.set_sync_status(format!("Asking {} to pair…", peer.name).into());
+                let _ = cmd.send(crate::sync::engine::Cmd::PairWith(peer));
+            }
+        });
+    }
+    {
+        let gw = ui.global::<UIState>().as_weak();
+        let s = state.clone();
+        ui.global::<UIState>().on_sync_forget(move |id| {
+            let g = gw.upgrade().unwrap();
+            s.sync_forget_peer(&id);
+            g.set_sync_status("Device forgotten.".into());
+            refresh_sync_ui(&g, &s);
+        });
+    }
+    {
+        let gw = ui.global::<UIState>().as_weak();
+        let s = state.clone();
+        ui.global::<UIState>().on_sync_auto_toggled(move |on| {
+            let g = gw.upgrade().unwrap();
+            s.sync_set_auto(on);
+            g.set_sync_status(
+                if on {
+                    "Automatic sync on — paired devices sync every minute."
+                } else {
+                    "Automatic sync off — use Sync now."
+                }
+                .into(),
+            );
+        });
+    }
+    {
+        let gw = ui.global::<UIState>().as_weak();
+        let cmd = cmd_tx.clone();
+        ui.global::<UIState>().on_sync_add(move |text| {
+            let g = gw.upgrade().unwrap();
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                return;
+            }
+            let (ip, port) = match text.rsplit_once(':') {
+                Some((host, p)) => match p.parse::<u16>() {
+                    Ok(port) => (host.to_string(), port),
+                    Err(_) => (text.clone(), crate::sync::SYNC_PORT),
+                },
+                None => (text.clone(), crate::sync::SYNC_PORT),
+            };
+            g.set_sync_status(format!("Looking for a Quire at {ip}:{port}…").into());
+            let _ = cmd.send(crate::sync::engine::Cmd::ProbeAdd { ip, port });
+        });
+    }
+
+    // the pump: drain the engine's jobs on this thread, then decide whether
+    // the periodic round is due. A `Box::leak`ed Timer is what keeps it
+    // armed for the whole run (dropping a Timer cancels it) — the same
+    // discipline the flush timer follows.
+    let ui_w = ui.as_weak();
+    let s = state.clone();
+    let cmd = cmd_tx.clone();
+    let last_auto = std::cell::Cell::new(std::time::Instant::now());
+    let t: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
+    t.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(250),
+        move || {
+            let Some(ui) = ui_w.upgrade() else { return };
+            let g = ui.global::<UIState>();
+            let mut answered = false;
+            while let Ok(job) = job_rx.try_recv() {
+                handle_sync_job(&g, &s, job);
+                answered = true;
+            }
+            if answered {
+                refresh_sync_ui(&g, &s);
+            }
+            let (auto, interval) = s.sync_config();
+            if auto && last_auto.get().elapsed().as_secs() >= interval {
+                last_auto.set(std::time::Instant::now());
+                for peer in s.sync_peers().into_iter().filter(|p| p.paired) {
+                    let _ = cmd.send(crate::sync::engine::Cmd::SyncWith(peer));
+                }
+            }
+        },
+    );
+}
+
+/// One engine job, answered on the UI thread.
+fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::sync::engine::Job) {
+    use crate::sync::engine::Job;
+    match job {
+        Job::ExportSnapshot { reply } => {
+            let _ = reply.send(state.sync_export());
+        }
+        Job::ListLocalAttachments { reply } => {
+            let ids: Vec<u64> = state.attachments.borrow().keys().map(|k| *k as u64).collect();
+            let _ = reply.send(ids);
+        }
+        Job::AttachmentBytes { id, reply } => {
+            let bytes = {
+                let atts = state.attachments.borrow();
+                atts.get(&(id as i64))
+                    .and_then(|att| std::fs::read(state.store.display_path(att)).ok())
+            };
+            if let Some(bytes) = bytes {
+                let _ = reply.send(bytes);
+            }
+        }
+        Job::ApplyRemote {
+            peer,
+            snapshot,
+            bytes,
+            reply,
+        } => {
+            // An *inbound push* arrives without a kind (the server has only
+            // the snapshot to name the sender by, see `sync::server`), and it
+            // is refused unless the device is in the peers table as paired —
+            // otherwise anything on the network could write into this
+            // library. The pull half always carries a full record from the
+            // table, which only holds paired peers the user can see.
+            let inbound_push = peer.kind.is_empty();
+            let known = state
+                .sync_peers()
+                .iter()
+                .any(|p| p.id == peer.id && p.paired);
+            if inbound_push && !known {
+                let message = format!(
+                    "{} pushed a snapshot but is not paired — refused",
+                    if peer.name.is_empty() { "An unknown device" } else { &peer.name }
+                );
+                state.sync_log_push(&peer.id, false, &message);
+                g.set_sync_status(message.clone().into());
+                let _ = reply.send(Err(message));
+                return;
+            }
+            let result = state.sync_apply_remote(&snapshot, &bytes, &peer);
+            match &result {
+                Ok(_) => {
+                    // the workspace moved under the open page: redraw what the
+                    // window shows before anything else looks at it
+                    open(g, state, state.open_page.get());
+                    state.reproject_blocks();
+                    state.db_refresh_page(None);
+                    state.sync_log_push(&peer.name, true, "merged a peer's changes");
+                    g.set_sync_status(format!("Synced with {}.", peer.name).into());
+                }
+                Err(e) => {
+                    state.sync_log_push(&peer.name, false, e);
+                    g.set_sync_status(format!("Sync failed: {e}").into());
+                }
+            }
+            // whoever reached us is trusted from here on — that is the
+            // pairing handshake's receiving half
+            state.sync_note_device(
+                &peer.id,
+                &peer.name,
+                &peer.kind,
+                &peer.ip,
+                peer.port,
+                Some(true),
+            );
+            let _ = reply.send(result);
+        }
+        Job::InboundPair { device, ip, reply } => {
+            state.sync_note_device(
+                &device.id,
+                &device.name,
+                &device.kind,
+                &ip,
+                device.port,
+                Some(true),
+            );
+            state.sync_log_push(&device.name, true, "paired");
+            g.set_sync_status(format!("{} asked to pair and is trusted now.", device.name).into());
+            let _ = reply.send(true);
+        }
+        Job::Discovered { device, ip } => {
+            state.sync_note_device(
+                &device.id,
+                &device.name,
+                &device.kind,
+                &ip,
+                device.port,
+                None,
+            );
+        }
+        Job::Paired { device, ip } => {
+            state.sync_note_device(
+                &device.id,
+                &device.name,
+                &device.kind,
+                &ip,
+                device.port,
+                Some(true),
+            );
+            state.sync_log_push(&device.name, true, "paired");
+            g.set_sync_status(format!("Paired with {}.", device.name).into());
+        }
+        Job::SyncDone {
+            peer_id,
+            ok,
+            message,
+        } => {
+            state.sync_note_synced(&peer_id, ok);
+            state.sync_log_push(&peer_id, ok, &message);
+            if ok {
+                g.set_sync_status(message.into());
+            } else {
+                g.set_sync_status(message.clone().into());
+                // a failed round is worth the notice bar: the user asked for
+                // a sync (or left auto on) and nothing moved
+                g.set_db_notice(format!("Sync: {message}").into());
+            }
+        }
+        Job::AutoTick => {}
+    }
+}
+
+/// The dialog's rows, rebuilt from the peers table and the log.
+fn refresh_sync_ui(g: &UIState<'_>, state: &AppState) {
+    let now = crate::sync::engine::now_unix();
+    let rows: Vec<crate::SyncRow> = state
+        .sync_peers()
+        .into_iter()
+        .map(|p| {
+            // the announcement cadence is 4 s; a peer heard inside ~15 s is
+            // on the network right now
+            let online = now.saturating_sub(p.last_seen) < 15;
+            let status = if !p.paired {
+                "found · not paired".to_string()
+            } else if p.last_sync.is_empty() {
+                "paired · never synced".to_string()
+            } else {
+                format!("paired · synced {}", p.last_sync)
+            };
+            crate::SyncRow {
+                id: p.id.into(),
+                label: format!(
+                    "{} ({})",
+                    if p.name.is_empty() { "Device" } else { &p.name },
+                    if p.kind.is_empty() { "unknown" } else { &p.kind }
+                )
+                .into(),
+                status: status.into(),
+                ip: p.ip.into(),
+                paired: p.paired,
+                online,
+            }
+        })
+        .collect();
+    g.set_sync_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,8 +630,13 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
 
     {
         let gw = gw.clone();
+        let s = state.clone();
         ui.global::<UIState>().on_settings_open_requested(move || {
             let g = gw.upgrade().unwrap();
+            // the sync section reads the peers table: rebuild its rows on
+            // every open, so a device found while the dialog was shut is
+            // there when the user looks
+            refresh_sync_ui(&g, &s);
             g.set_settings_open(true);
         });
     }
@@ -352,6 +648,9 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
             g.set_settings_open(false);
         });
     }
+
+    // LAN sync: the engine's threads and the pump that answers them here
+    start_sync(ui, state);
 
     // ---- page tree ----
     {
@@ -3402,6 +3701,70 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 g.set_slash_open(true);
             }
         });
+    }
+
+    // The touch bar's "+": the desktop "+" handle's insert affordance, moved
+    // to the one row a thumb always reaches. It inserts an empty paragraph
+    // after the page's last block — or makes the page's first one through the
+    // empty state's own door — and opens the insert menu over the new row.
+    // The menu anchors above the bar, clamped like every popup anchor.
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>()
+            .on_insert_at_end_requested(move || {
+                let g = gw.upgrade().unwrap();
+                if s.page_locked() {
+                    s.note_locked();
+                    return;
+                }
+                let page = core_page_id(s.open_page.get());
+                let open_menu = |g: &UIState<'_>| {
+                    s.open_slash_insert("");
+                    let row_h = 44.0_f32;
+                    let count = g.get_slash_items().row_count() as f32;
+                    let menu_h = count * row_h + 8.0;
+                    let edge = content_edge_offset(&g);
+                    let bar = if g.get_touch_mode() { 56.0 } else { 0.0 };
+                    let y = (g.get_window_h() - bar - menu_h - 8.0).max(48.0);
+                    g.set_slash_x(edge + 16.0);
+                    g.set_slash_y(y);
+                    g.set_slash_filter("".into());
+                    g.set_slash_focus(0);
+                    g.set_slash_insert(true);
+                    g.set_slash_open(true);
+                };
+                let last = {
+                    let d = s.doc.borrow();
+                    d.page_blocks(page).last().map(|b| b.id.0 as i32)
+                };
+                match last {
+                    Some(id) => {
+                        let changes = s.exec_on_open_page(Command::InsertBlockAfter {
+                            id: BlockId(id as u64),
+                            kind: crate::core::BlockKind::Paragraph,
+                            text: String::new(),
+                        });
+                        if let Some(nid) = changes.as_deref().and_then(find_inserted_id) {
+                            focus_block(&g, &s, nid, 0);
+                            open_menu(&g);
+                        }
+                    }
+                    None => {
+                        // the empty state makes the first paragraph and puts
+                        // the caret in it; the menu then opens over that row
+                        g.invoke_empty_page_started();
+                        let made = {
+                            let d = s.doc.borrow();
+                            d.page_blocks(page).last().map(|b| b.id.0 as i32)
+                        };
+                        if let Some(nid) = made {
+                            focus_block(&g, &s, nid, 0);
+                        }
+                        open_menu(&g);
+                    }
+                }
+            });
     }
 
     {

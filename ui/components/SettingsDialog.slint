@@ -66,7 +66,14 @@ component ShortcutRow inherits Rectangle {
 
 export component SettingsDialog inherits PopupWindow {
     width: 400px;
-    height: content-col.preferred-height + Theme.spacing-lg * 2;
+    // The card grows with its sections but never past the window it is drawn
+    // in: once the sync section landed the list outgrew a short window (and a
+    // phone at the touch scale), and a dialog whose bottom rows are off-screen
+    // has no way back — so the content scrolls instead (see the Flickable).
+    height: Math.min(
+        content-col.preferred-height + Theme.spacing-lg * 2,
+        Math.max(UIState.window-h - 80px, 320px)
+    );
     close-policy: PopupClosePolicy.no-auto-close;
 
     property <bool> opened: UIState.settings-open;
@@ -110,16 +117,23 @@ export component SettingsDialog inherits PopupWindow {
             border-color: Colors.border;
         }
 
-        content-col := VerticalLayout {
-            padding: Theme.spacing-lg;
-            spacing: Theme.spacing-md;
+        Flickable {
+            width: parent.width;
+            height: parent.height;
+            content-height: content-col.preferred-height;
 
-            Text {
-                text: "Settings";
-                font-family: Typography.ui-font;
-                font-size: Typography.size-h3;
-                font-weight: Typography.weight-semibold;
-                color: Colors.text-primary;
+            content-col := VerticalLayout {
+                x: 0; y: 0;
+                width: parent.width;
+                padding: Theme.spacing-lg;
+                spacing: Theme.spacing-md;
+
+                Text {
+                    text: "Settings";
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-h3;
+                    font-weight: Typography.weight-semibold;
+                    color: Colors.text-primary;
             }
 
             Text {
@@ -188,6 +202,134 @@ export component SettingsDialog inherits PopupWindow {
                         animate x { duration: Theme.duration-fast; }
                     }
                 }
+            }
+
+            Rectangle { height: 1px; background: Colors.border; }
+
+            // ── LAN sync (crate::sync): the devices this library syncs with,
+            // one line each, and the two doors into a new pairing — the
+            // announcements the engine hears, or an address typed by hand.
+            Text {
+                text: "SYNC";
+                font-size: Typography.size-caption;
+                font-weight: Typography.weight-semibold;
+                color: Colors.text-muted;
+            }
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                Text {
+                    text: "Sync with the other Quire devices on this network (port 5878)";
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-ui;
+                    color: Colors.text-secondary;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    width: 40px;
+                    height: 22px;
+                    border-radius: 11px;
+                    background: UIState.sync-auto ? Colors.accent : Colors.border-strong;
+                    animate background { duration: Theme.duration-fast; }
+                    TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            UIState.sync-auto = !UIState.sync-auto;
+                            UIState.sync-auto-toggled(UIState.sync-auto);
+                        }
+                    }
+                    Rectangle {
+                        x: UIState.sync-auto ? parent.width - self.width - 2px : 2px;
+                        y: 2px;
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 9px;
+                        background: Colors.surface-overlay;
+                        animate x { duration: Theme.duration-fast; }
+                    }
+                }
+            }
+            for row in UIState.sync-rows : VerticalLayout {
+                spacing: 2px;
+                Text {
+                    text: row.label + (row.online ? " · online" : "");
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-ui;
+                    color: Colors.text-primary;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    spacing: Theme.spacing-xs;
+                    Text {
+                        text: row.status;
+                        font-family: Typography.ui-font;
+                        font-size: Typography.size-caption;
+                        color: Colors.text-muted;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    if !row.paired : Button {
+                        text: "Pair";
+                        clicked => {
+                            UIState.sync-pair(row.id);
+                        }
+                    }
+                    if row.paired : Button {
+                        text: "Sync now";
+                        clicked => {
+                            UIState.sync-now(row.id);
+                        }
+                    }
+                    Button {
+                        text: "Forget";
+                        clicked => {
+                            UIState.sync-forget(row.id);
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                add-ip := TextInput {
+                    text <=> UIState.sync-add-text;
+                    font-family: Typography.mono-font;
+                    font-size: Typography.size-caption;
+                    color: Colors.text-primary;
+                    selection-foreground-color: Colors.text-primary;
+                    selection-background-color: Colors.selection;
+                    horizontal-stretch: 1;
+                    height: 26px;
+                    vertical-alignment: center;
+                    single-line: true;
+                    accepted => {
+                        UIState.sync-add(UIState.sync-add-text);
+                    }
+                }
+                // TextInput has no placeholder (see CommandPalette): the hint
+                // is a Text drawn only while the field is empty
+                if UIState.sync-add-text == "" : Text {
+                    text: "192.168.1.20 or 192.168.1.20:5878";
+                    font-family: Typography.mono-font;
+                    font-size: Typography.size-caption;
+                    color: Colors.text-muted;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Button {
+                    text: "Add by IP";
+                    clicked => {
+                        UIState.sync-add(UIState.sync-add-text);
+                    }
+                }
+            }
+            if UIState.sync-status != "" : Text {
+                text: UIState.sync-status;
+                font-family: Typography.ui-font;
+                font-size: Typography.size-caption;
+                color: Colors.text-muted;
+                wrap: word-wrap;
             }
 
             Rectangle { height: 1px; background: Colors.border; }
@@ -333,6 +475,7 @@ export component SettingsDialog inherits PopupWindow {
                         UIState.settings-close-requested();
                     }
                 }
+            }
             }
         }
     }
