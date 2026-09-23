@@ -15,16 +15,32 @@ run *args:
 
 # local CI replacement (the GitHub workflow was removed on purpose):
 # everything a push would run, before you commit.
-# `--workspace` survived the two-crate week and is now decoration: this workspace
-# has one member again, and `quire-core` is a *dependency*, which no cargo flag
-# run from here will test. Its 431 tests belong to that repository
-# (`cargo test --all-targets` there). So a green `just check` here means the shell
-# compiles against the pinned rev and its own suite passes — never quote it as
-# "the whole app is green".
+# `--workspace` survived the two-crate week and is now decoration twice over:
+# this manifest declares no workspace at all (cargo-apk 0.10 refuses to read one,
+# ADR-0095), so the flag names exactly this package — and `quire-core` is a
+# *dependency*, which no cargo flag run from here will test. Its 431 tests belong
+# to that repository (`cargo test --all-targets` there). So a green `just check`
+# here means the shell compiles against the pinned rev and its own suite passes —
+# never quote it as "the whole app is green".
 check:
     cargo check --workspace --all-targets
     cargo test --workspace
     cargo build --workspace --release
+
+# Android (M9.pre). Same no-CI decision, so these are the local entry; they need
+# NDK 30 and there is still no device behind any of them.
+android-check:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android-build.ps1 -Task check
+
+# the claim `check` cannot make: a cdylib that links (cargo check never links)
+android-lib:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android-build.ps1 -Task lib
+
+# one APK, both ABIs inside, signed with the throwaway keystore the script
+# generates into .scratch/ (Cargo.toml's [package.metadata.android.signing] points
+# cargo-apk at it — the debug key cargo-apk embeds is refused by --release)
+android-apk:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android-build.ps1 -Task apk
 
 # headless visual shot: software-rendered PNG of the real UI, no window.
 # Scene names: default dark palette search-notes menu rename settings dialog empty

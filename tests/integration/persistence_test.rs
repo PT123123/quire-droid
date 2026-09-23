@@ -13,6 +13,10 @@ use quire::services::persistence::{
 };
 use quire::storage::{backup, SqliteRepository};
 use quire::testing::ScratchDir;
+// The library target is `quire_shell`, so it never shares its PDB with the
+// binaries — the alias keeps every path above reading as `quire::`
+// (Cargo.toml's `[lib]` carries the reason).
+use quire_shell as quire;
 
 /// A database path, and the folder holding it. The folder comes back as a
 /// guard that deletes itself, because a session leaves `.bak<N>` snapshots

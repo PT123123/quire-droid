@@ -429,6 +429,14 @@ export global UIState {
     in-out property <bool> dark: false;
     in-out property <bool> sidebar-open: true;
 
+    // Set once by the launcher on the platforms with a finger instead of a
+    // pointer (M9.pre). It is runtime state rather than a compile-time cfg
+    // because the components that answer it are the same compiled units on both
+    // targets — one `AppWindow`, one set of popups, one Rust contract — and
+    // because Slint's `.slint` files have no platform cfg to write instead
+    // (ADR-0096).
+    in-out property <bool> touch-mode: false;
+
     in-out property <[SidebarNode]> sidebar-rows;
     in-out property <int> sidebar-selected-id: 0;
     in-out property <int> renaming-id: -1;      // page being renamed inline

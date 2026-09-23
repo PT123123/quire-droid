@@ -9,6 +9,7 @@ import { TopBar } from "./TopBar.slint";
 import { IconButton } from "./IconButton.slint";
 import { Sidebar } from "./Sidebar.slint";
 import { Editor } from "./Editor.slint";
+import { MobileBar } from "./MobileBar.slint";
 import { UIState } from "../Types.slint";
 
 export component AppShell inherits Rectangle {
@@ -77,8 +78,48 @@ export component AppShell inherits Rectangle {
             }
         }
         HorizontalLayout {
-            Sidebar {}
+            // The desktop rail. On a touch screen the same list rides over the
+            // page as a drawer below instead, and then this element is not
+            // instantiated at all: two `Sidebar`s would mean two `ListView`s
+            // both holding `content-y <=> UIState.tree-viewport-y`, and the
+            // scroll mirror would answer to whichever one last moved.
+            if !UIState.touch-mode : Sidebar {}
             Editor {}
+        }
+        // The thumb-reachable row of a phone: nothing a finger has to travel to
+        // the top of the window for. Its five actions are the desktop's own
+        // keyboard chords and title-bar buttons, through the same UIState
+        // callbacks, so no Rust is involved in this bar at all.
+        if UIState.touch-mode : MobileBar {}
+    }
+
+    // The page list as a drawer, over the document rather than beside it. It is
+    // outside the VerticalLayout on purpose: a drawer that costs the editor a
+    // column is not a drawer.
+    if UIState.touch-mode && UIState.sidebar-open : Rectangle {
+        x: 0; y: 0;
+        width: root.width; height: root.height;
+        clip: true;
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: Colors.scrim;
+        }
+        // A tap anywhere outside the panel closes it. Declared before the panel
+        // so the panel is above it and keeps its own rows' clicks.
+        drawer-close := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                UIState.toggle-sidebar();
+            }
+        }
+        Rectangle {
+            x: 0; y: 0;
+            width: Theme.sidebar-width;
+            height: parent.height;
+            Sidebar {}
         }
     }
 

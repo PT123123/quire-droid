@@ -1992,6 +1992,155 @@ request names, and this fixture gives it exactly one to look at. D9's line above
 built; its pixels are on record (`docs/REPORT_TRACK3.md` §D10, 32 database scenes) and its
 keyboard is not.
 
+## M9.pre · the Android shell's whole price is bytes, because there is no window to time (2026-09-23)
+
+The user's bar for this milestone was 「编译通过就行，不用安装到真机，注意性能」, so the
+honest set here is a **size table and a build-cost table**, plus one statement about what
+neither can say. No first-paint, no frame time, no RAM figure appears below, because all
+three need a screen and there is none — `adb devices` is empty and the SDK has no
+`system-images/`. A latency number invented from a linker would be the worst kind of row in
+this file, so the empty cells stay empty and named.
+
+Evidence bank: `.scratch/m9/report.md` plus the logs in `.scratch/m9/`
+(`check_both.log`, `build_lib.log`, `apk.log`, `apk2.log`, and `verify_round2.log` +
+`apk3.log` for the pass that rebuilt everything under the `quire_shell` library name).
+Toolchain: NDK 30.0.15729638, API 24, cargo-apk 0.10.0, Slint 1.18 with
+`backend-android-activity-06` + `renderer-skia` (ADR-0095).
+
+### 1 · What ships
+
+The artifact is `target/release/apk/quire_shell.apk`: zipaligned, signed, and holding both
+ABIs. Raw entry sizes come out of the archive itself, not off a rebuild. It is named after
+the library target, not the package — see §2's last paragraph.
+
+| artifact | bytes | MiB | deflate inside the APK | MiB |
+|---|---:|---:|---:|---:|
+| `libquire_shell.so` `aarch64`, release, **un**-stripped | 33 244 216 | 31.70 | — | — |
+| `libquire_shell.so` `x86_64`, release, **un**-stripped | 33 234 768 | 31.69 | — | — |
+| the same two after cargo-apk's `llvm-strip` (`strip = "strip"`) | 32 834 000 / 33 080 488 | 31.31 / 31.55 | — | — |
+| `lib/arm64-v8a/libquire_shell.so`, as packed | 32 834 000 | 31.31 | 12 575 762 | **11.99** |
+| `lib/x86_64/libquire_shell.so`, as packed | 33 080 488 | 31.55 | 12 886 840 | **12.29** |
+| `AndroidManifest.xml` | 2 520 | 0.00 | 884 | 0.00 |
+| **`quire_shell.apk`** — manifest + both libs + the signing and signature blocks | 65 919 074 | 62.87 | **25 473 461** | **24.29** |
+| for scale: desktop `quire.exe`, release, default FemtoVG arm | 27 847 168 | 26.56 | — | — |
+
+(The desktop row is the measurement from the pass before the library rename. A concurrent
+session was rebuilding `target/release` while this one ran, so the exe on disk afterwards
+read 28 267 520 B — a different tree state, not a second sample of the same one, and the
+comparison below is quoted against the recorded 26.56 MiB rather than that number.)
+
+Four readings, one of them against the intuitive guess:
+
+* **What a phone pays: a 31.3 MiB `libquire_shell.so` on disk, ≈12 MiB over the wire for its own
+  ABI.** A device fetches one ABI, so the number that matters is 11.99 MiB (arm64) or
+  12.29 MiB (x86_64), not the 24.29 MiB whole-APK figure. Those are zip-deflate sizes from
+  `apksigner`'s own container, not Google Play's download estimate, which compresses
+  differently — the right order of magnitude, not a store listing. (An earlier
+  hand-rolled deflate probe of the same two files read 13 029 569 / 13 242 964, 3.5 % high;
+  the APK's own entry table replaces it.)
+* **`strip` barely moves the needle: 410 216 B on `aarch64`, 154 280 B on `x86_64`** — 0.39 and
+  0.15 MiB off a 32 MB file. `[profile.release]` carries `strip = "debuginfo"`, which drops
+  the debug sections but keeps the symbol table, and the symbols cargo-apk's `llvm-strip`
+  then removes turn out to be worth a fifth of a megabyte. **There is no size lever in
+  stripping** — the "we shipped a debug build by accident" saving is not available here.
+* **The two ABIs are within 9.4 KB of each other un-stripped**, so neither carries dead
+  weight the other avoided; this is the library's size, not a backend's.
+* **The 31 MiB is not the shell's doing.** The dependency set that dominates the `.so` —
+  Skia, `resvg`, Glutin/GLES, bundled SQLite — is the same one the desktop binary links,
+  which is why the whole Android library comes out at 31.7 MiB against a 26.6 MiB desktop
+  `.exe`, and why a row of its own is not evidence about this crate: the host rlib sits at
+  639 256 204 bytes in the debug profile, which is metadata rather than code, and no rlib
+  number separates what a linker keeps.
+  That 5 MiB gap is the renderer and the platform backend — skia-on-GLES, `android-activity`
+  plus the `classes.dex` Slint embeds in the library — and no size report here separates
+  them, so it is an attribution by elimination, not a measured breakdown. What *is*
+  measurable is that nothing M9.pre added has a footprint at this resolution:
+  `platform::picker` is 103 lines, `android.rs` is 55.
+
+### 2 · What building it costs
+
+| run | wall time |
+|---|---:|
+| `cargo check --target …-linux-android --all-targets`, `x86_64` on a warm graph (4 crates) | 1 m 03 s |
+| the same for `aarch64`, first pass for that triple (201 crates) | 1 m 48 s |
+| a dev `check` of the library with `--no-default-features` and nothing else (the renderer-flag proof, one ABI) | 1 m 25 s |
+| `cargo apk build --release`, both ABIs cold (aarch64 first, then x86_64 — `build_targets` order) | 16 m 55 s + 22 m 56 s |
+| the same command re-run with the keystore configured | 12 m 40 s + **7.6 s** |
+| after the library rename: `android-build.ps1 -Task check`, both ABIs warm, one process each | 169 s |
+| `-Task lib` (plain `cargo build --release --lib`), both ABIs | 1,182 s = 14 m 13 s (x86_64, and its first minutes were waiting on a `target/` lock another session held) + 5 m 24 s (aarch64) |
+| `cargo apk build --release --lib`, both ABIs, nothing else changed | 517 s = 4 m 33 s + 3 m 51 s of compiling, then align + sign |
+
+The last three rows are one run, and its first pass *reported failure*: the script looked for
+`target/release/apk/quire.apk` while cargo-apk had just written, aligned and signed
+`quire_shell.apk`. The APK's file name is derived from the library target too, like
+`lib_name` and the `.so` inside it, so the rename moved all three at once — and the
+file-not-found is precisely what the "judge by the artifact" rule is for. It caught a
+naming change instead of letting a green exit code stand in for a package that was fine.
+
+`cargo check` never links, which is why the `-Task lib` row exists at all: the claim under
+test is that a file named `libquire_shell.so` comes out of the crate for both ABIs, and
+only a build can say that. What is measured here is that an APK pass does not reuse the
+plain cargo builds' work — a cold one recompiles the dependency graph from source, which is
+the 17–23 minutes — while a warm one recompiles this crate alone. The usual explanation
+(cargo-apk carries its own `RUSTFLAGS`, so the fingerprints differ) was **not separated
+out**, and no number below depends on which of the two is right. That, whatever its cause,
+is why `scripts\android-build.ps1 -Task lib` is the entry to run while iterating and
+`-Task apk` the one to run once.
+
+The 12 m 40 s / 7.6 s pair is the one to read carefully: 12 m 40 s against 7.6 s for the two
+ABIs of the same command. The log carries exactly one `Compiling quire` line, so the long
+pass rebuilt only this crate — 60-odd modules with `lto = "thin"` and `codegen-units = 1`,
+then a 33 MB link — and the short pass found everything up to date. **Why the pair split
+that way (whether the previous run's left-hand ABI aged out and the right-hand one did not)
+was not separated, so do not read 7.6 s as "an incremental Android release build costs
+seconds"**: one ABI of one crate is 12 minutes here, which is the same LTO tax the desktop
+release build pays, on a slower linker path. The re-run after the rename put the same
+warning on the other rows: `-Task lib` cost 14 m 13 s for the ABI that spent its first
+minutes waiting for another session's lock on `target/`, and 5 m 24 s for the one that did
+not, so these wall times are only comparable inside a run, not across runs.
+
+Two build behaviours worth knowing before the second run, both measured here:
+
+* **cargo-apk panics after it has succeeded, and one flag says why.** The tool does not
+  ask cargo what it built: it parses the manifest, collects the lib *and every `[[bin]]`
+  it can see*, and names each artifact's file from a table that only covers a cdylib — so
+  the first binary reaches `cargo-subcommand-0.12.0/src/artifact.rs:51` and dies with
+  `Bin is not compatible with Cdylib`, *after* `quire.apk` was aligned, verified and
+  signed, next to a 1 021-byte `quire-shot-unaligned.apk` that is the corpse of the
+  attempt. `cargo apk build --release --lib` is the correction: one artifact in the list,
+  no panic, and no `quire-typing` compiled for a phone that will never run it. The script
+  still asserts a fresh `quire_shell.apk` and prints its byte size, because an exit code
+  from this tool is not a statement about the package. That assertion then caught a third
+  thing: the APK is named after the *library target*, so the rename moved it from
+  `quire.apk` to `quire_shell.apk`, and a run whose package had been built, aligned and
+  signed correctly reported failure until the expected filename was updated to match.
+
+### 3 · What is not on record, in the order it will bite
+
+1. **First paint.** ADR-0009's 8 MB thread is reproduced on Android because the recursion
+   is Slint's, not Windows', but nothing here has seen a frame. The closest recorded
+   number is the desktop `skia-opengl` arm's **440 ms** on the empty shell — and that
+   section's own conclusion already warns what it is worth: desktop GL on an Intel iGPU,
+   a floor for device numbers rather than a prediction of them.
+2. **Scroll cost and RAM**, i.e. every frame number in this file — those are all
+   winit/FemtoVG (idle 114 MB) or winit/skiagraph-on-OpenGL (idle 236 MB). A GLES Skia
+   build on a phone is a fourth renderer column with no row yet, and the ≈2× working-set
+   price M7 measured for skia is the one Android inherits by necessity, not by choice.
+3. **Touch targets.** The swept count, re-measured against the tree as it now stands:
+   **186 height literals below 44 px across 28 files of `ui/`** — 23 of them are
+   ≤ 2 px (dividers and spacers, not anything a finger aims at), which leaves **163 in the
+   3–43 px band** a 44 dp audit would actually walk. `DatabaseView.slint` holds 38 of them
+   (39 literals, one already ≥ 44 px). The recipe is written out because this count has
+   drifted three times: `(min-|max-)?height: [0-9]+px` over `ui/**/*.slint` reads 196
+   literals across 29 files. That is a size defect measurable on desktop pixels, so it got
+   counted rather than guessed at, and it is deferred as a pass — not resolved. (The notes
+   and ADR-0096 carried "221 across 25 files" from a looser pattern that also matched
+   non-`px` heights; anchoring `height:` to the start of the line then lost every `min-`
+   and `max-` match and read 181.)
+4. **The `.so` load and dex path.** Slint embeds its `classes.dex` inside the library and
+   loads it through `InMemoryDexClassLoader`; that works or it does not at run time, and
+   the linker is not evidence either way.
+
 ## Stress · the ladder past the matrix, and two pages the app does not survive (2026-09-23)
 
 The standing matrix stops at 10 000 blocks because that is what a product page is allowed

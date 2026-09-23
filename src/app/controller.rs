@@ -33,6 +33,38 @@ fn page_drag_id(data: &slint::DataTransfer) -> Option<i32> {
     data.plain_text().ok()?.strip_prefix(PAGE_DRAG_MIME)?.parse().ok()
 }
 
+/// The extensions the attachment decoder can actually read. Named once because
+/// the picture picker and the cover picker promise the same list (SPEC §三十七).
+const PICTURE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "gif"];
+
+/// How far the document starts from the window's left edge: the rail's width
+/// while it stands beside the page. On a touch screen the same list is a drawer
+/// *over* the page (M9.pre), so the page never moves — and with the drawer open
+/// `sidebar-open` is true while the width the editor lost is still none.
+fn content_edge_offset(g: &UIState<'_>) -> f32 {
+    if g.get_sidebar_open() && !g.get_touch_mode() {
+        260.0
+    } else {
+        0.0
+    }
+}
+
+/// Run a file dialog and turn its answer into "the path, or nothing happened".
+///
+/// Every picker in the app comes through here, which is what lets the Android
+/// build have no file dialog at all without a single silent button: the platform
+/// answers `Unsupported` and the notice bar says so (see `src/platform/picker.rs`).
+fn ask(g: &UIState<'_>, picker: crate::platform::picker::Picker) -> Option<std::path::PathBuf> {
+    match picker.pick() {
+        crate::platform::picker::Chosen::Path(path) => Some(path),
+        crate::platform::picker::Chosen::Cancelled => None,
+        crate::platform::picker::Chosen::Unsupported(why) => {
+            g.set_db_notice(format!("{why}.").into());
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,7 +143,9 @@ pub fn bind(ui: &AppWindow, state: &Rc<AppState>) {
     g.set_renderer_name(renderer_name().into());
     g.set_dark(state.dark_setting());
     g.set_lan_sharing(state.setting_flag("lan.share"));
-    g.set_sidebar_open(!state.setting_flag("sidebar.closed"));
+    // The rail's memory is a desktop half-open window; a drawer that remembered
+    // itself open would cover the page it is supposed to slide over.
+    g.set_sidebar_open(!g.get_touch_mode() && !state.setting_flag("sidebar.closed"));
     // settings storage row (M8): the database folder, hidden for a
     // memory-only session
     g.set_data_dir(state.data_dir().unwrap_or_default().into());
@@ -3052,7 +3086,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 // The height follows the row count so the tall root menu
                 // (and its submenus) never anchor below the window.
                 let scroll = g.get_editor_scroll_y();
-                let edge = if g.get_sidebar_open() { 260.0 } else { 0.0 };
+                let edge = content_edge_offset(&g);
                 let menu_h = g.get_block_menu_rows().row_count() as f32 * 28.0 + 16.0;
                 let y = (40.0 + handle_y as f32 - scroll + 2.0)
                     .clamp(48.0, (g.get_window_h() - menu_h).max(48.0));
@@ -3323,7 +3357,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 let count = g.get_slash_items().row_count() as f32;
                 let menu_h = count * 32.0 + 8.0;
                 let scroll = g.get_editor_scroll_y();
-                let edge = if g.get_sidebar_open() { 260.0 } else { 0.0 };
+                let edge = content_edge_offset(&g);
                 let y = (40.0 + row_bottom as f32 - scroll + 4.0)
                     .clamp(48.0, (g.get_window_h() - menu_h - 8.0).max(48.0));
                 g.set_slash_x(edge + content_x as f32);
@@ -4102,7 +4136,7 @@ fn flush_pending_edit(g: &UIState<'_>, state: &Rc<AppState>) {
 fn open_slash_at(g: &UIState<'_>, row_y: f32, row_h: f32, content_x: f32) {
     let menu_h = g.get_slash_items().row_count() as f32 * 32.0 + 8.0;
     let scroll = g.get_editor_scroll_y();
-    let edge = if g.get_sidebar_open() { 260.0 } else { 0.0 };
+    let edge = content_edge_offset(&g);
     let y = (40.0 + row_y - scroll + row_h + 4.0)
         .clamp(48.0, (g.get_window_h() - menu_h - 8.0).max(48.0));
     g.set_slash_x(edge + content_x);
@@ -4243,7 +4277,7 @@ fn pick_attachment(
     kind: crate::core::BlockKind,
 ) {
     let pictures = kind == crate::core::BlockKind::Image;
-    let picker = rfd::FileDialog::new().set_title(if pictures {
+    let picker = crate::platform::picker::Picker::open().title(if pictures {
         "Insert a picture"
     } else {
         "Attach a file"
@@ -4252,11 +4286,11 @@ fn pick_attachment(
     // formats — png, jpeg, bmp, gif — and nothing else. The file one must not:
     // naming any type is the whole point of the kind.
     let picker = if pictures {
-        picker.add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "gif"])
+        picker.filter("Pictures", PICTURE_EXTS)
     } else {
-        picker.add_filter("All files", &["*"])
+        picker.filter("All files", &["*"])
     };
-    let Some(path) = picker.pick_file() else {
+    let Some(path) = ask(g, picker) else {
         return;
     };
     let id = s.claim_attachment_id();
@@ -4295,11 +4329,12 @@ fn pick_attachment(
 /// because a cover is not a second kind of file: it is one more thing that
 /// points at the attachment table.
 fn pick_cover(g: &UIState<'_>, s: &Rc<AppState>, page: i32) {
-    let Some(path) = rfd::FileDialog::new()
-        .set_title("Choose a cover")
-        .add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "gif"])
-        .pick_file()
-    else {
+    let Some(path) = ask(
+        g,
+        crate::platform::picker::Picker::open()
+            .title("Choose a cover")
+            .filter("Pictures", PICTURE_EXTS),
+    ) else {
         return;
     };
     let id = s.claim_attachment_id();
@@ -4321,11 +4356,12 @@ fn attachment_action(g: &UIState<'_>, s: &Rc<AppState>, id: i32, save: bool) {
     let label = att.name.clone();
     let path = s.store.stored_path(&att);
     if save {
-        let Some(target) = rfd::FileDialog::new()
-            .set_title("Save attachment as")
-            .set_file_name(s.store.save_name(&att))
-            .save_file()
-        else {
+        let Some(target) = ask(
+            g,
+            crate::platform::picker::Picker::save()
+                .title("Save attachment as")
+                .name(&s.store.save_name(&att)),
+        ) else {
             return;
         };
         let notice = match s.store.export_to(&att, &target) {
@@ -4436,11 +4472,12 @@ fn export_template_markdown(
         g.set_db_notice("That row is no longer a template.".into());
         return;
     };
-    if let Some(path) = rfd::FileDialog::new()
-        .add_filter("Markdown", &["md"])
-        .set_file_name(&format!("{name}.md"))
-        .save_file()
-    {
+    if let Some(path) = ask(
+        g,
+        crate::platform::picker::Picker::save()
+            .filter("Markdown", &["md"])
+            .name(&format!("{name}.md")),
+    ) {
         match std::fs::write(&path, md) {
             Ok(()) => g.set_db_notice(format!("Exported \"{name}\" to {}", path.display()).into()),
             Err(e) => g.set_db_notice(format!("Export failed: {e}").into()),
@@ -4453,10 +4490,10 @@ fn export_template_markdown(
 /// and a template must not be openable — sharing the function would mean one of
 /// the two doors is wrong.
 fn import_template_dialog(g: &UIState<'_>, state: &Rc<AppState>) {
-    let Some(path) = rfd::FileDialog::new()
-        .add_filter("Markdown", &["md"])
-        .pick_file()
-    else {
+    let Some(path) = ask(
+        g,
+        crate::platform::picker::Picker::open().filter("Markdown", &["md"]),
+    ) else {
         return;
     };
     let Ok(src) = std::fs::read_to_string(&path) else {
@@ -4505,24 +4542,22 @@ fn export_current_page(g: &UIState<'_>, state: &Rc<AppState>) {
             },
         )
     };
-    if let Some(path) = rfd::FileDialog::new()
-        .add_filter("Markdown", &["md"])
-        .set_file_name(&format!("{}.md", title))
-        .save_file()
-    {
+    if let Some(path) = ask(
+        g,
+        crate::platform::picker::Picker::save()
+            .filter("Markdown", &["md"])
+            .name(&format!("{}.md", title)),
+    ) {
         match std::fs::write(&path, md) {
             Ok(()) => eprintln!("quire: exported {}", path.display()),
             Err(e) => eprintln!("quire: export failed: {e}"),
         }
     }
-    let _ = g;
 }
 
 /// Import a .md file as a new page via the native open dialog.
 fn import_markdown_dialog(g: &UIState<'_>, state: &Rc<AppState>) {
-    if let Some(path) = rfd::FileDialog::new()
-        .add_filter("Markdown", &["md"])
-        .pick_file()
+    if let Some(path) = ask(g, crate::platform::picker::Picker::open().filter("Markdown", &["md"]))
     {
         import_from_path(g, state, &path);
     }

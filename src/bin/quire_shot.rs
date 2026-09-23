@@ -18,6 +18,10 @@
 use quire::app::controller;
 use quire::app::state::{AppState, HandleArgs};
 use quire::{AppWindow, UIState};
+// The library target is `quire_shell`, so it never shares its PDB with the
+// binaries — the alias keeps every path above reading as `quire::`
+// (Cargo.toml's `[lib]` carries the reason).
+use quire_shell as quire;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, LogicalPosition, Model, PhysicalSize, Rgb8Pixel, SharedPixelBuffer, SharedString};

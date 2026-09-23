@@ -22,6 +22,10 @@ use quire::services::search_service::SearchService;
 use quire::storage::search_index::SearchRequest;
 use quire::storage::SqliteRepository;
 use quire::AppWindow;
+// The library target is `quire_shell`, so it never shares its PDB with the
+// binaries — the alias keeps every path above reading as `quire::`
+// (Cargo.toml's `[lib]` carries the reason).
+use quire_shell as quire;
 use slint::{ComponentHandle, Model, Timer, TimerMode};
 
 struct Args {

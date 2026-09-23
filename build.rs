@@ -7,7 +7,13 @@ fn main() {
     let ui = std::env::var("QUIRE_PROBE").unwrap_or_else(|_| "ui/AppWindow.slint".into());
     slint_build::compile(&ui).expect("Slint build failed");
 
-    write_windows_resource();
+    // The exe's shell identity only exists where there is an exe to carry it.
+    // `embed-resource` asks the *host* for rc.exe, and the host is Windows when
+    // the Android `.so` is cross-compiled from a desktop, so without this gate
+    // the Android build would try to stamp a resource into a shared library.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        write_windows_resource();
+    }
 }
 
 /// The exe's shell identity (M8): the icon Explorer, the taskbar and the Start

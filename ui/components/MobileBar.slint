@@ -1,0 +1,119 @@
+// The thumb row (M9.pre): the five things worth reaching without covering the
+// page. It exists only in touch mode, and it calls back into the same UIState
+// callbacks the desktop's Ctrl+… chords use, so it adds no Rust surface at all.
+
+import { Theme } from "../Theme.slint";
+import { Colors } from "../Colors.slint";
+import { Typography } from "../Typography.slint";
+import { Icon } from "../Icons.slint";
+import { UIState } from "../Types.slint";
+
+component BarItem inherits Rectangle {
+    in property <string> icon-name;
+    in property <string> label;
+    callback clicked();
+
+    // `parent` is not reachable from a component's own root. The bar gives each
+    // item an equal share of its width and full height at the use site
+    // (`width: parent.width / 5`); an explicit width is used instead of
+    // `horizontal-stretch` because this build does not honor a root-level
+    // stretch for layout children. `vertical-stretch` below is honored and
+    // claims the bar's full height.
+    vertical-stretch: 1;
+
+    // The pressed state is the feedback a finger needs, and `has-hover` is what
+    // Slint calls the touch-down state on a touch screen; on desktop this bar is
+    // not mounted.
+    background: ta.has-hover ? Colors.hover-fill : transparent;
+    animate background { duration: Theme.duration-instant; }
+
+    VerticalLayout {
+        alignment: center;
+        // the bar's cross axis is horizontal, which is what centers the icon
+        // over its caption
+        cross-axis-alignment: center;
+        spacing: 1px;
+        Icon {
+            width: 20px;
+            height: 20px;
+            size: 20px;
+            name: root.icon-name;
+            color: ta.has-hover ? Colors.text-primary : Colors.text-secondary;
+        }
+        Text {
+            text: root.label;
+            font-family: Typography.ui-font;
+            font-size: Typography.size-caption;
+            color: ta.has-hover ? Colors.text-primary : Colors.text-muted;
+            horizontal-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component MobileBar inherits Rectangle {
+    height: Theme.bottombar-height;
+    background: Colors.sidebar;
+
+    // One edge, drawn rather than as a border: Slint's `border-width` would put
+    // a line on all four sides of the bar, and the bottom one is the screen.
+    Rectangle {
+        x: 0; y: 0;
+        width: parent.width;
+        height: 1px;
+        background: Colors.border;
+    }
+
+    HorizontalLayout {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+        spacing: 0px;
+
+        BarItem {
+            width: parent.width / 5;
+            icon-name: "arrow-left";
+            label: "Back";
+            clicked => {
+                UIState.nav-back-requested();
+            }
+        }
+        BarItem {
+            width: parent.width / 5;
+            icon-name: "arrow-right";
+            label: "Forward";
+            clicked => {
+                UIState.nav-forward-requested();
+            }
+        }
+        BarItem {
+            width: parent.width / 5;
+            icon-name: "panel-left";
+            label: "Pages";
+            clicked => {
+                UIState.toggle-sidebar();
+            }
+        }
+        BarItem {
+            width: parent.width / 5;
+            icon-name: "plus";
+            label: "New";
+            clicked => {
+                UIState.page-create-requested();
+            }
+        }
+        BarItem {
+            width: parent.width / 5;
+            icon-name: "search";
+            label: "Search";
+            clicked => {
+                UIState.search-open-requested();
+            }
+        }
+    }
+}

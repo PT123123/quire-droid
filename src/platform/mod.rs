@@ -1,9 +1,41 @@
-// Platform adapters — only where Slint/Windows forces us to (M8).
+// Platform adapters — only where Slint/Windows forces us to (M8), plus the two
+// seams an Android build has to fill: the file dialog and the data directory.
 // Policy (ADR-0002): never implement TSF/IME ourselves.
 
 pub mod dib;
+pub mod picker;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Where a per-user library may live, or `None` when this OS has no such idea.
+///
+/// The placement rules in `storage::data_location` take the directory as a
+/// parameter and read `%APPDATA%` themselves through `roaming_root()`. That is
+/// right on a desktop and wrong here: Android has no per-user profile directory
+/// in the environment (the app gets its own writable path from the Activity, and
+/// the process's working directory is not writable at all), so the port has to
+/// hand the path in rather than have it discovered. `android_main` stores it at
+/// startup; until it does, `None` means the same thing it has always meant — the
+/// session stays where it is.
+pub fn data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        APP_DATA_DIR.get().cloned()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        quire_core::storage::data_location::roaming_root()
+    }
+}
+
+#[cfg(target_os = "android")]
+static APP_DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Called once from `android_main`, before anything resolves a path.
+#[cfg(target_os = "android")]
+pub fn set_data_dir(dir: PathBuf) {
+    let _ = APP_DATA_DIR.set(dir);
+}
 
 /// Copy `text` to the system clipboard, as CF_UNICODETEXT via the same FFI
 /// `read_clipboard` uses (ADR-0025's write half: `clip.exe`'s OEM-codepage

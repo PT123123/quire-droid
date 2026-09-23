@@ -13,6 +13,12 @@
 pub mod app;
 pub mod platform;
 
+// The Android entry (M9.pre). It is the crate's `main` on that platform — the
+// desktop `main` in src/main.rs and this one are the only two entry points, and
+// each exists solely to hand the launcher its platform's answers.
+#[cfg(target_os = "android")]
+pub mod android;
+
 pub use quire_core::{core, services, storage, testing};
 
 slint::include_modules!();

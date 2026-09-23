@@ -1,19 +1,8 @@
-[workspace]
-# One member again: the model and the store left for their own repository
-# (ADR-0094) and come back as the pinned git dependency below, so the only crate
-# built from this directory is the Slint shell.
-members = ["."]
-
-[workspace.dependencies]
-# gif is listed because `attachment_store` names a GIF row `gif` / `image/gif`.
-# It is pinned here rather than spelled out at each use site so the shell and the
-# store agree: the same version and feature set is what stops cargo from building
-# two copies of one library into one binary.
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif"] }
-# `bundled` in one place for the same reason: two different feature sets for
-# rusqlite across the two repositories would compile SQLite twice.
-rusqlite = { version = "0.40.2", features = ["bundled"] }
-
+# No `[workspace]` table, and that is a packaging fact rather than a style
+# choice: `cargo apk` 0.10 refuses to read a manifest that declares one ("Did
+# not expect a `[workspace]`"), and the APK is the only way this application
+# reaches a phone. The table had stopped doing work anyway — see the two pins
+# below.
 [package]
 name = "quire"
 version = "0.1.0"
@@ -22,6 +11,29 @@ description = "A local, GPU-accelerated, Notion-like document app built with Rus
 # three binaries exist (quire / quire-shot / quire-typing); this is the app
 default-run = "quire"
 
+# `default-run` is the app; the library is both the test target and, on Android,
+# the whole application.
+#
+# `cdylib` is for Android (M9.pre): the platform loads an app as a shared
+# library whose entry is `android_main`, and there is no exe to link. It is
+# unconditional because cargo has no per-target `crate-type`, so the cost on
+# Windows is one extra link of the same object files into `quire_shell.dll`
+# beside the exe, which nothing runs.
+#
+# The library is *not* named `quire`, and that is not a style choice either: a
+# cdylib and a binary that share a target name share `target/<profile>/quire.pdb`
+# too, which cargo warns about ("this may become a hard error", rust-lang/cargo
+# #6313) and then acts on — measured 2026-09-23, a `cargo build --lib` after a
+# full build replaced `target/debug/quire.pdb`, the 413 MB one `quire.exe` is
+# documented against, with the DLL's 187 MB. Every consumer keeps reading the
+# crate as `quire` through one `use quire_shell as quire;`, so the alias is the
+# only place the rename is visible. On Android the same name is what
+# `android.app.lib_name` and the packaged `libquire_shell.so` are derived from,
+# so the two cannot drift (ADR-0095).
+[lib]
+name = "quire_shell"
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 # The model, the store and the windowless services, at a commit that is known
 # green here. A `rev` rather than a tag because the extracted repository has one
@@ -29,18 +41,63 @@ default-run = "quire"
 # Over HTTPS on purpose: the repository is public, and this is the URL that works
 # on a machine that has no SSH key registered — pushing uses SSH.
 quire-core = { git = "https://github.com/PT123123/quire-core.git", rev = "f3044e22ee597307fe6bb031662b65ac1856a030" }
-image = { workspace = true }
-rfd = "0.17.2"
-rusqlite = { workspace = true }
-# Renderer is selected per cargo feature (see [features]); default-features are off so
-# exactly one GPU renderer is compiled per binary, keeping the binary lean.
+# These two used to sit in `[workspace.dependencies]`, "so the shell and the
+# store agree". They never did: `quire-core` is a *git dependency*, not a member,
+# and workspace inheritance does not reach across a repository boundary. What
+# makes one copy of each library is a compatible version requirement plus
+# `Cargo.lock`, and that is unchanged here — the pins are the same strings, in
+# the one place cargo now has to read them.
+#
+# `bundled` is why the SQLite pin matters: it is what puts the engine inside the
+# `.so` instead of asking Android for a system library the app may not have.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+# Everything that knows about a window system or an OS shell sits on one side of
+# this cfg split or behind `src/platform/`. The two `slint` sections are
+# mutually exclusive targets, which is what makes cargo accept naming one
+# dependency twice; the alternative — one dependency and a feature list that
+# lies about the target — is what broke the first Android probe build.
+#
+# Renderer stays a cargo feature (see [features]) on both sides, with
+# default-features off so exactly one GPU renderer is compiled per binary.
+# `backend-winit` carries the desktop window systems (X11/Wayland/macOS/Windows);
+# `accessibility` is the AccessKit bridge — no code of ours calls it, and that is
+# exactly why it stays: it is what Narrator and NVDA can read out of a Slint
+# window, so a grep for "0 hits in src/" is no argument for dropping it on the
+# desktop. It is on this side of the split rather than both because Android's
+# accessibility route goes through the platform's own view hierarchy, which a
+# single `NativeActivity` surface does not have. `system-tray` was dropped on
+# both: nothing in the app shows a tray icon, and the finding predates this
+# slice rather than being part of it.
+[target.'cfg(not(target_os = "android"))'.dependencies]
 slint = { version = "1.18", default-features = false, features = [
     "std",
     "backend-winit",
     "accessibility",
-    "system-tray",
     "image-default-formats",
     "compat-1-18",
+] }
+# The native file dialogs behind import/export/attachment picking. It has no
+# Android backend at all — the crate fails to *compile* for that target, which is
+# why it is a target dependency rather than a runtime check; every call site goes
+# through `src/platform/picker.rs`.
+rfd = "0.17.2"
+
+# Android has no window manager to ask for a window: the app is hosted by an
+# `Activity`, and the renderer is Skia on GLES (Slint cfg's FemtoVG out on this
+# target). Naming it here rather than behind a cargo feature is what makes the
+# Android build need exactly one flag — `--no-default-features`, to switch the
+# desktop's FemtoVG default off — and nothing to opt in to. `--features skia`
+# from the desktop matrix still works; it just asks for what this line already
+# says (measured 2026-09-23, both spellings link).
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "backend-android-activity-06",
+    "image-default-formats",
+    "compat-1-18",
+    "renderer-skia",
 ] }
 
 [features]
@@ -86,3 +143,49 @@ path = "src/bin/quire_typing.rs"
 codegen-units = 1
 lto = "thin"
 strip = "debuginfo"
+
+# Read by `cargo apk` (M9.pre), which generates the manifest, drops the built
+# `libquire_shell.so` into `lib/<abi>/` and signs the result with the debug
+# keystore. Both the file name and the manifest's `android.app.lib_name` come
+# from `[lib] name` above, so they cannot drift. Nothing in a desktop build looks
+# at this table.
+[package.metadata.android]
+package = "dev.quire.android"
+build_targets = ["aarch64-linux-android", "x86_64-linux-android"]
+# The `.so` is the app: Skia's statics land in it, so an unstripped one is
+# hundreds of MB (measured: 192 MB debug for the 2026-09-20 probe).
+strip = "strip"
+
+[package.metadata.android.sdk]
+# API 24 is what the NDK 30 clang wrapper targets here, and Slint's own dex step
+# assumes >= 20; 24 covers everything from Android 7 upward.
+min_sdk_version = 24
+target_sdk_version = 34
+
+# `--share` serves the library over the LAN, so the socket needs the permission;
+# the app never asks for storage access — the database and the attachments live
+# in the app's own data directory (`platform::data_dir`).
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[package.metadata.android.application]
+label = "Quire"
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+
+[package.metadata.android.application.activity]
+# Re-layout on rotation rather than restart: an editor session holds unsaved
+# blocks in memory and the process has no instance-state save path yet.
+orientation = "unspecified"
+config_changes = "orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density|uiMode"
+
+# cargo-apk refuses to sign a `--release` package with the debug key it embeds,
+# so the path it asks for is spelled out here. What sits at that path is a
+# throwaway key that `scripts/android-build.ps1` generates on first use into
+# `.scratch/` — a directory this repository does not track — and the password is
+# the one in that script, not a secret. It exists so the last step of packaging
+# (aapt, zipalign, apksigner) is proven on this machine; shipping a real build
+# means a real keystore with a real identity, and that decision is M9.1's.
+[package.metadata.android.signing.release]
+path = ".scratch/m9/quire-debug.jks"
+keystore_password = "quire-debug"
+

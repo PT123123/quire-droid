@@ -436,6 +436,48 @@ First functional release: a local, single-file-database notes workspace.
 - GPU rendering (FemtoVG default; Skia / wgpu builds selectable); idle
   CPU ≈ 0, a 10 000-block page costs ≈10 MB over the empty shell
 
+### Android (M9.pre)
+- The shell builds for `aarch64-linux-android` and `x86_64-linux-android`: the
+  library is a `cdylib` whose entry is `android_main`, `slint` is declared once
+  per target operating system, and `rfd` — which has no Android backend and
+  fails to compile there — moved to the desktop side of that split (ADR-0095)
+- The database and the attachments live in the Activity's private files
+  directory (`internal_data_path()/Quire`), fed to the placement rules that
+  already took a per-user path as a parameter; `quire-core` did not change for
+  this. An Activity that answers no path says so in the notice bar instead of
+  running an in-memory session that looks saved
+- The seven file dialogs in the app go through `platform::Picker`. On Android the
+  answer is `Unsupported` and the notice names the half that is missing ("cannot
+  open…" vs "cannot save…"), so no button on a phone is silently dead. The
+  Storage Access Framework door is M9.5
+- One UI, not two: `UIState.touch-mode` (set once before the first layout) drops
+  the title bar's window controls, turns the layout rail into an over-the-page
+  drawer that starts shut, and mounts `MobileBar` — five thumb-reachable actions
+  that are the desktop's own keyboard chords, so the bar adds no Rust surface
+  (ADR-0096). `--touch` draws the same shape in a Windows window
+- `scripts\android-build.ps1 -Task check|lib|apk` is the local entry: both ABIs,
+  one flag (`--no-default-features`), and an APK through `cargo apk`. There is no
+  CI for it, and nothing here has been run on a device — the milestone is a build
+  result, not a behaviour claim (`docs/ANDROID_NOTES.md`)
+- The first signed package is `target/release/apk/quire_shell.apk`: **24.29 MiB with
+  both ABIs inside**, each one ≈12 MiB compressed and 31.3 MiB installed, against
+  a 26.56 MiB desktop `quire.exe`. `strip` is worth 0.39 / 0.15 MiB of that, so
+  there is no size lever left in it, and the cold release pass costs 17–23
+  minutes per ABI (`docs/PERFORMANCE.md`, M9.pre section)
+- `-Task apk` judges itself by the file it produces, not by cargo-apk's exit
+  code: cargo-apk 0.10 reads the manifest itself and packages every artifact it
+  finds there, so a `[[bin]]` target makes it panic (`Bin is not compatible with
+  Cdylib`). `--lib` names the one target this platform can package. The script
+  throws unless `quire_shell.apk` is on disk and newer than the run
+- The library target is `quire_shell`, not `quire`. Making it a `cdylib` put a
+  second product behind the binary's own name, and the two shared
+  `target/<profile>/quire.pdb`: a `cargo build --lib` replaced the 413 MB symbol
+  file `quire.exe` is documented against with the DLL's 187 MB. Cargo warns about
+  that ("this may become a hard error", rust-lang/cargo#6313) and then does it
+  anyway. Five consumers carry one `use quire_shell as quire;` line each instead
+  of a path rewrite, and the same `[lib] name` is what the APK's
+  `android.app.lib_name` and its `libquire_shell.so` are read from (ADR-0095)
+
 ### Build & test
 - `just check`: `cargo check --all-targets`, the whole test suite, a release
   build. Visual regression and the RAM/CPU scenes run from

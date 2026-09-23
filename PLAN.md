@@ -3360,6 +3360,75 @@ E 盘的另一个 home 被兜底规则洗成 `Users\<user>`；`profile_bench.ps1
 27 847 168。有一处误报要说清：按「账号名作为子串」判会命中 1 行，那是英文单词里偶然含到的三个
 字母，不是路径；所以真正的判据是上面那两条不依赖账号名的（drive 前缀 + `Users\`）。
 
+## M9.pre · 安卓壳（2026-09-23，on `master`）
+
+用户点定三件事：**编译过就行、不装真机、注意性能**；外壳**复用桌面组件**，不重写那 12k 行 `ui/`。
+下面每一句都按这三条收口（ADR-0095 / ADR-0096）。
+
+**做了什么**
+
+- `Cargo.toml` 按 target OS 分裂：`slint` 出现两次——桌面那侧 `backend-winit` + `accessibility`，
+  安卓那侧 `backend-android-activity-06` + `renderer-skia`——`rfd` 只在桌面。`[lib] crate-type`
+  加了 `cdylib`（cargo 没有按 target 的 crate-type，所以 Windows 这侧白多出一个没人加载的 `quire_shell.dll`）。
+  安卓需要传的 flag 只剩一个 `--no-default-features`：渲染器写在依赖表里，不必再 `--features skia`。
+- 两道缝进 `src/platform/`：`data_dir()`（安卓是 Activity 的 `internal_data_path()/Quire`，桌面照旧
+  `%APPDATA%`）、`picker::Picker`（7 处 `rfd::FileDialog` 全改走它；安卓是第三种答 `Unsupported`，
+  通知栏会分清「打不开」和「存不了」，于是没有一颗按钮是闷着不响的）。`quire-core` 为这一刀**没改过
+  一个字**——`decide()`/`migration()` 本来就把 per-user 路径当参数收。
+- `src/main.rs` 的启动序列搬进 `src/app/launcher.rs::run(start, touch_mode)`，`main.rs` 剩 10 行；
+  `src/android.rs` 55 行就是 `android_main`，照 ADR-0009 再开一条 8 MB 栈的线程（理由是 Slint 递归
+  布局，不是 Windows）。
+- UI 不 fork：`UIState.touch-mode` 一处声明、两个文件七处 `if` 读；新组件只有
+  `ui/components/MobileBar.slint`（五个动作全是既有回调，Rust 一行没加）。抽屉与侧栏是**互斥实例**——
+  两个 `Sidebar` 会去抢同一条 `content-y <=> tree-viewport-y`。桌面想看不用真机：`--touch`。
+
+**踩到并改掉的五个坑**
+
+1. 头一版分裂把 slint 的 `accessibility` 一并删了，理由是「`src/` 里 0 处引用」——这条论证对**桥接类**
+   特性根本不成立：删掉它 Narrator / NVDA 就读不到这个窗口，而我们的代码本来就一行都不用写。已放回桌面
+   那侧；安卓那侧不该有，是因为平台的可访问性服务走 view hierarchy，而这里只有一个 `NativeActivity` 表面。
+2. cargo-apk 0.10 见到清单里有 `[workspace]` 直接罢工（`Did not expect a [workspace]`）。而那张表其实
+   早就没在跨仓统一任何东西——`quire-core` 是 git 依赖、不是成员——所以整段删掉，`image`/`rusqlite`
+   两条 pin 原样搬回 `[dependencies]`，两条的版本与 feature 一字未改。
+3. `--all-targets` 不等于「清单里全都编过」：`quire-shot` 挂着 `required-features = ["software"]`，
+   `--no-default-features` 那趟根本没编它。所以那句「两 ABI 全绿」说的是库、`quire-typing` 和两枚集成
+   测试壳，不多不少。
+4. `cargo apk build` 读的是清单、不是 cargo 的构建计划，它会把包里**每一个**产物都往 APK 里塞，而它只
+   认得 `cdylib` 的名字：撞到第一个 `[[bin]]` 就 panic（`Bin is not compatible with Cdylib`，
+   cargo-subcommand 0.12 `artifact.rs:51`）。加 `--lib` 是把这个平台唯一能打包的目标先说清楚——不 panic，
+   也不再为一部永远跑不到它的手机去链 `quire-typing`。
+5. 无条件加 `cdylib` 换来一个**我自己制造的回归**：库和 `quire.exe` 共用一个 target 名，也就共用
+   `target/debug/quire.pdb`。cargo 对这件事是有警告的（rust-lang/cargo#6313，"this may become a hard error"），
+   而覆盖是真实发生的——量到的：整树编完再 `cargo build --lib`，`quire.exe` 那枚 413 MB 的符号文件被
+   DLL 的 187 MB 换掉了。修法不是把 `src/` 与 `tests/` 里那 72 处 `quire::` 路径重写，而是 `[lib] name = "quire_shell"`
+   + 五个消费方各一行 `use quire_shell as quire;`（rustfmt 会把 `quire` 排在 `quire_shell` 前面，所以别名
+   要放在那一组的**下面**）。安卓这侧同名同源：`android.app.lib_name` 与打包的 `libquire_shell.so` 都从
+   `[lib] name` 读出来，两者不会漂移。
+
+**验证**（NDK 30.0.15729638 / API 24 / cargo-apk 0.10）
+
+- `cargo check --target x86_64-linux-android --all-targets` 1m03s、`aarch64` 1m48s，两趟都是
+  0 error。中途唯一的警告是 `Picker.kind` 在安卓 cfg 下成了死字段——改法不是 `#[allow]`，而是让
+  `Unsupported` 按 open/save 各说一句话，警告消掉、通知栏也更准。改名之后两 ABI 一趟 169 s。
+- `check` 从不链接，所以 release `cdylib` 是真编过的：`libquire_shell.so` aarch64 33,244,216 B、
+  x86_64 33,234,768 B（未压缩 62.87 MiB，两 ABI 只差 9.4 KB）；cargo-apk 的 `llvm-strip` 只再省
+  0.39 / 0.15 MiB（`[profile.release]` 的 `strip = "debuginfo"` 已经把大头做完了）。
+  `-Task lib` 两 ABI 1,182 s。
+- 包出来了：`target/release/apk/quire_shell.apk` **25,473,461 B = 24.29 MiB**，两个 ABI 都在里面
+  （arm64 deflate 12,575,762 B、x86_64 12,886,840 B），`apksigner verify` 说 v2 + v3 过、v1（JAR）
+  不过，`min_sdk_version = 24` 下这正好够用。体积对照表在 `docs/PERFORMANCE.md` §1（桌面 release
+  `quire.exe` 那一行是改名之前量的，并行会话当时正在重链 `target/release`，所以没有重抄）。
+- 桌面门槛按 `just check` 复跑（分裂依赖 + 删 `[workspace]` + 改库名，动的都是清单不是逻辑）：
+  `check --all-targets` 133 s、`cargo build`（dev，专门用来看 PDB 警告还在不在）243 s 且**没有**警告、
+  `cargo test` 218 s / 134 passed 0 failed；`target/debug/` 里 `quire.pdb`（416,952,320 B，exe 的）与
+  `quire_shell.pdb`（188,518,400 B，库的）同时存在，就是上面第 5 个坑修好的样子。
+
+**没验的（诚实）**：没设备、也没 AVD，用户明确说了不用装真机。首帧、帧时、内存、IME、抽屉手势**一个数都
+没有**——`docs/PERFORMANCE.md` 新加的那节是体积表，不是延迟表，别拿桌面 skia/GL 那臂去读它。签名那一步走
+的是 `.scratch/` 里现生成的一次性 key（清单里那条 signing 表就是给它指路的），真正的发布身份留给 M9.1。
+M9.0（真机输入尖峰）和 `ui/` 里那 163 处 3–43 px 的 `height:` 字面量（44 dp 那一刀的量法见
+`docs/ANDROID_NOTES.md`），仍旧排在后面。
+
 ## 压测 · 阶梯推到矩阵之外，而一支量具先修了它自己的谎（2026-09-23，on `master`，无新 ADR：测量刀）
 
 **这一刀不做机制，做三件事：把树压到断、把断的形状钉住、把本文件此前一句错的收回来。**

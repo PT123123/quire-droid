@@ -3,6 +3,10 @@
 
 use quire::app::state::{core_page_id, AppState, HandleArgs, BLOCK_PARAGRAPH, PAGE_GETTING_STARTED};
 use quire::app::workspace::Workspace;
+// The library target is `quire_shell`, so it never shares its PDB with the
+// binaries — the alias keeps every path here reading as `quire::`
+// (Cargo.toml's `[lib]` carries the reason).
+use quire_shell as quire;
 use slint::Model;
 
 #[test]

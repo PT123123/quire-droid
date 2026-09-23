@@ -144,27 +144,29 @@ export component TopBar inherits Rectangle {
             }
         }
 
-        Rectangle {
+        // ---- window controls ----
+        // Minimize, maximize and close are a window manager's idea. A phone has
+        // none to show here, and the three 38 px cells they occupy are the ones
+        // a thumb cannot reach without covering the title.
+        if !UIState.touch-mode : Rectangle {
             width: 1px;
             height: 18px;
             cross-axis-self-alignment: center;
             background: Colors.border;
         }
-
-        // ---- window controls ----
-        WindowControlButton {
+        if !UIState.touch-mode : WindowControlButton {
             icon-name: "minimize";
             clicked => {
                 root.minimize-requested();
             }
         }
-        WindowControlButton {
+        if !UIState.touch-mode : WindowControlButton {
             icon-name: "maximize";
             clicked => {
                 root.maximize-requested();
             }
         }
-        WindowControlButton {
+        if !UIState.touch-mode : WindowControlButton {
             icon-name: "x";
             hover-bg: Colors.danger;
             hover-fg: Colors.text-on-accent;

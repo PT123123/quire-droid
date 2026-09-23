@@ -2,6 +2,217 @@
 
 Format: decision → context → consequences. Newest first.
 
+## ADR-0096 · Touch mode is a property on the `UIState` global, not a second UI tree
+
+Decision: `ui/Types.slint`'s `UIState` gains one property —
+`in-out property <bool> touch-mode: false` — set once by the launcher before the
+first component is realized, and read in seven places across two files that
+already existed. There is no second `.slint` entry for the phone: no
+`ui/AndroidWindow.slint`, no per-platform copy of a component, one `AppWindow`
+on both platforms and therefore one set of the eight popups. The only new UI file
+is `ui/components/MobileBar.slint`, whose five buttons call `UIState` callbacks
+that already existed and add no Rust surface at all.
+
+Context: `docs/ANDROID_NOTES.md` measured this job on 2026-09-20 as "all of
+`ui/`" — 12 000 lines, 31 hover affordances, 8 popup windows, 68 `in-out`
+properties on one global, row heights that mostly miss the 44 dp touch minimum.
+What that estimate did not count is the surface the host actually holds. Rust
+addresses exactly two things: `ui.global::<UIState>()`, and `ui.window()` for a
+size and a rendering notifier. Nothing in `src/` names a component, a row
+delegate or a popup, so the tree could be re-shaped without either side having
+to know the other's file list.
+
+Consequences:
+
+- **The fork's cost would have been paid twice a day.** A second tree is a second
+  place every one of those 68 properties has to agree with, on a platform nobody
+  here can run — the divergence would have been discovered by a phone, which is
+  the last instrument this project owns.
+- **Seven reads, and every one of them is an `if`.** `TopBar` gates a divider and
+  the three window controls (a phone has no window manager to serve from a title
+  bar); `AppShell` gates the rail, the drawer and the thumb bar. A reviewer can
+  hold that list in one screen, which is the test a decision of this shape should
+  pass before anyone calls it small.
+- **The rail and the drawer are mutually exclusive, and that is a correctness
+  rule rather than a layout choice.** `Sidebar` binds `content-y <=>
+  UIState.tree-viewport-y`; two live instances would leave the tree's scroll
+  position owned by whichever list last moved, because an invisible or
+  zero-width element keeps both its bindings and its layout slot. The desktop
+  loses nothing — its rail was already a plain `Sidebar {}` in a layout — and the
+  phone loses a slide animation, since an element behind an `if` has no previous
+  geometry to animate from. On a 400 px screen the page keeping its full width is
+  the better half of that trade.
+- **`touch-mode` being runtime state means it is reachable at runtime**, which is
+  how the layout was seen without a phone: `--touch` on the desktop binary draws
+  the window the way a device would. It is not a supported mode and the flag
+  doc says so — no 44 dp audit stands behind it. The direction cannot be
+  reversed by a user: Android never reads argv, so there is no spelling that
+  flips a phone back to the desktop shape.
+- **Ordering is load-bearing and invisible.** `set_touch_mode` runs before
+  `controller::bind`, and `bind` reads the flag when it decides the sidebar
+  default. A phone's drawer starts shut — an open drawer over the document is not
+  a drawer, and the setting that remembers the desktop rail has nothing to
+  remember here. Move `bind` above `set_touch_mode` and the drawer silently
+  reopens on the next launch, on a platform where nobody would see it until a
+  user does.
+- **What this deliberately does not adapt is the expensive half.** The block
+  kit's hover chrome and the touch-target question stay open, and the number is
+  on the record: **186 height literals under 44 px across 28 files of `ui/`** —
+  23 of them ≤ 2 px, so dividers and spacers that no finger aims at, and **163 in
+  the 3–43 px band** a real audit would walk (`DatabaseView.slint` alone holds
+  38). The pattern is spelled out because this count has drifted three times:
+  `(min-|max-)?height: [0-9]+px` over `ui/**/*.slint`, which reads 196 literals
+  across 29 files in total, 186 of them below 44 px and 10 at or above it. The
+  first sweep matched non-`px` heights too and reported 221 across 25 files; a
+  re-count that anchored `height:` to the start of the line lost every `min-`
+  and `max-` match and read 181. Not all of the 163 are touch targets either — a
+  20 px chevron inside a 36 px row is not one, and which of them are is a
+  question a desktop cannot answer. A flag
+  that reaches seven places is a decision; a flag that reaches a hundred and
+  sixty is a second design pretending to be a property, and that one deserves
+  its own milestone.
+
+## ADR-0095 · The shell splits by target operating system, and one launch sequence serves both
+
+Decision: four moves, none of them a runtime check. **`slint` is named twice** in
+`Cargo.toml`, once per mutually exclusive target cfg — `backend-winit` on the
+desktop side, `backend-android-activity-06` plus `renderer-skia` on the Android
+one — and `rfd` sits on the desktop side alone. **`[lib] crate-type` is
+`["rlib", "cdylib"]`**, unconditional. **The two questions the launch asks the
+operating system moved behind `src/platform/`**: `data_dir()` for where a library
+may live, `picker::Picker` for whether a file dialog exists. **The start-up
+sequence moved out of `main.rs`** into `app::launcher::run(start, touch_mode)`,
+leaving `src/main.rs` at ten lines and `src/android.rs` at fifty-five — each of
+them a thread spawn plus two arguments.
+
+Context: ADR-0093 and ADR-0094 gave the model and the store their own repository
+"so a second shell can compile them without a window". This is that second
+shell's first compile, and it stalled on the shell crate itself: every file that
+touched a window or a dialog named a desktop-only crate at the top of the file,
+and `main.rs` owned the launch. The milestone line in `docs/ANDROID_NOTES.md` was
+written against exactly this list, and its acceptance test was one cargo command.
+
+Consequences:
+
+- **Cargo accepts one dependency named twice because the two cfgs cannot both be
+  true.** The alternative — a single `slint` line whose feature list a build
+  script decides — is what Slint's own guidance warns against and what broke the
+  first probe build on 2026-09-20.
+- **An Android build's flag list is one long.** `--no-default-features`, and
+  nothing else: the default arm is FemtoVG, and Slint cfg's FemtoVG out of this
+  platform. The renderer the platform actually uses is named in the dependency
+  table rather than behind the desktop's `skia` feature, so a build that forgets
+  the desktop's vocabulary still gets a renderer — both spellings were built
+  here, and both link.
+- **`[workspace]` is gone from the manifest, and `cargo apk` is the reason.**
+  cargo-apk 0.10 refuses to read a manifest that declares one — its parser dies
+  on a file holding both `[workspace]` and `[package]` — and the APK is the
+  only route to a phone. The table had already stopped doing work:
+  `[workspace.dependencies]` pinned `image` and `rusqlite` so that "the shell and
+  the store agree", but `quire-core` is a *git dependency*, not a member —
+  inheritance does not cross a repository boundary, and what keeps one copy of
+  each library is a compatible version requirement plus `Cargo.lock`. The same
+  two strings moved into `[dependencies]`. `just check`'s `--workspace` now names
+  one package that is not a workspace, which is what it already meant. The lock
+  did move, and not because of that: +170/−45 lines, the Android side bringing in
+  `android-activity`, `ndk`, `jni` and their `ndk-sys`, and the desktop dropping
+  the three crates `system-tray` needed — `ksni`, `pastey`, `task-local`.
+- **Packaging the APK taught two more manifest lessons.** `[package.metadata.android]`
+  is inert to every build but cargo-apk's, so the release-signing table it needs lives
+  beside a keystore that `scripts/android-build.ps1` generates on first use into
+  `.scratch/` — a throwaway identity, because `--release` refuses the debug key cargo-apk
+  embeds and a real one is M9.1's decision, not a script's. And **cargo-apk 0.10 does not
+  ask cargo what it built**: it parses the manifest itself, collects the lib plus every
+  `[[bin]]` and `examples/` file it can see, and hands each to an APK — an artifact table
+  that only knows how to name a *cdylib*, so the first binary it reaches dies with
+  `Bin is not compatible with Cdylib` (cargo-subcommand 0.12, `artifact.rs:51`), *after*
+  the library's own APK has already been aligned and signed. The fix is the flag that says
+  what this platform packages: `cargo apk build --release --lib`, which leaves one artifact
+  in the list, no panic, and no `quire-typing` compiled for a phone that will never run it.
+  The script still judges the run by the file — fresh `quire_shell.apk` on disk, size
+  printed — because "the toolchain panicked at the end" must never again be read as "the
+  package is broken", nor the reverse. That rule paid for itself the same day: after the
+  library rename below, the run asserted `quire.apk`, found the previous morning's file,
+  and threw — over an APK that cargo-apk had built, aligned and signed two lines earlier
+  under the new name. The filename follows the library target, so all three names move
+  together.
+- **The `cdylib` costs the Windows build an artifact, not a runtime — and the
+  library had to be renamed to pay for it honestly.** cargo has no per-target
+  `crate-type`, so a `libquire_shell.dll` is linked beside `quire.exe` and nothing
+  loads it. It is not named `quire` because a cdylib and a binary that share a
+  target name also share `target/<profile>/quire.pdb`, which cargo warns about as
+  something that "may become a hard error" (rust-lang/cargo#6313) and which this
+  repository measured rather than argued: after a full build, one
+  `cargo build --lib` rewrote `target/debug/quire.pdb` from the 413 MB file
+  `quire.exe` was built against into the DLL's 187 MB one, leaving a live binary
+  whose recorded symbol file no longer matches it. Every consumer keeps the old
+  spelling with one line — `use quire_shell as quire;` — so the rename stops at
+  five files and the test bodies never mention it. Rebuilt after the rename, the
+  same full build writes `target/debug/quire.pdb` (416 952 320 B, the exe's) and
+  `target/debug/quire_shell.pdb` (188 518 400 B, the library's) side by side with
+  no warning in the log, and the desktop suite is unchanged at 134 passing. The
+  Android side is the reason
+  the name cannot simply be `quire_lib`: cargo-apk derives the packaged `.so` filename,
+  the manifest's `android.app.lib_name` *and the output APK's own name* from the library
+  target, so the three cannot drift apart — `libquire_shell.so`, `android.app.lib_name =
+  quire_shell` and `quire_shell.apk` are what the 2026-09-23 re-run read back out of the
+  manifest it generated and the archive it signed.
+- **A per-target feature list is where a silent capability removal hides, and it
+  nearly happened here.** The first version of this split dropped slint's
+  `accessibility` feature from both sides on the argument that no code in the
+  shell reads it — which is precisely the wrong argument, because AccessKit is
+  the bridge a screen reader uses without any call from the application. It is
+  back on the desktop table. Android's does not belong there: the platform's
+  accessibility service walks a view hierarchy, and this app hands Android one
+  `NativeActivity` surface, so there is nothing for it to walk. `system-tray`
+  stayed off both, and that one the argument does hold — no code, and no
+  setting, shows a tray icon.
+- **`--all-targets` for Android compiles the desktop's other targets** —
+  `quire-typing` and both integration harnesses — and they pass. That is a
+  statement about the type checker, not about running them there, and the list
+  has one hole worth naming: `quire-shot` declares
+  `required-features = ["software"]`, so an Android build that enables no
+  renderer feature does not compile it at all. `--all-targets` passing is
+  therefore not "everything in this manifest", and saying it as though it were
+  is how a skipped target becomes invisible. No cfg was added to hide any of
+  them, because a cfg would have to be maintained against the day one of them
+  does run there.
+- **The dialog path gained a third answer.** `Picker::pick()` returns a path, a
+  cancel, or `Unsupported(&str)` — the last of which is a case the call sites
+  could not express when each of them held an `rfd::FileDialog`. All seven go
+  through one `ask()`, which puts the reason in the notice bar ("Android cannot
+  save a file outside the app yet") instead of leaving a button that does
+  nothing. The desktop's answers are byte-for-byte what they were; the Android
+  door — Storage Access Framework, an activity result and a `ContentResolver`
+  copy — is M9.5.
+- **`quire-core` changed nothing for this slice, which was the point of
+  splitting it.** `data_location::decide()` and `migration()` already took the
+  per-user path as a parameter and `logging::init_at(dir)` already existed, so
+  the phone's `internal_data_path()` is supplied from the shell and no commit had
+  to be pushed to a public repository on the strength of a guess about a second
+  platform. The seam was designed in ADR-0093 for a consumer that did not exist
+  yet; this is the first evidence that the design was right, and the second is
+  that it cost nothing to use.
+- **ADR-0009's 8 MB stack stopped being a Windows note and became a platform
+  rule.** It is asserted in `desktop_main()` and again in `android_main()`,
+  because the reason is Slint evaluating the component tree recursively on the C
+  stack, not the operating system underneath. Two spawns of one thread is
+  duplication kept on purpose: the alternative is a helper that pretends to know
+  which entry a platform has.
+- **What this does not deliver is the part that needs a device.** No first-paint
+  number, no IME behaviour, no gesture. The packaging steps are proven up to the
+  boundary of the phone: the manifest is written, both `.so` entries are aligned
+  and verified, the archive is signed, and `apksigner verify` on the result says
+  **v2 and v3 pass, v1 (JAR) does not** — which is fine at `min_sdk_version = 24`
+  and is exactly the line below which it would not be. What comes out is a
+  24.29 MiB two-ABI `quire_shell.apk`, re-signed under that name after the library
+  rename. Nothing past that boundary has been run — no
+  `adb install`, no logcat, no view of the icon, the orientation flag or the
+  `INTERNET` permission as a package manager sees them. The bar was set at
+  "compiles, and watch the cost" by explicit decision on 2026-09-23, so the
+  milestone closed on a build result and `docs/ANDROID_NOTES.md`'s risk 1, 2 and
+  3 are exactly where they were.
+
 ## ADR-0094 · The extracted crate leaves this repository and comes back as a pinned git dependency
 
 Decision: `crates/data/` is deleted here. Its content is now the repository
