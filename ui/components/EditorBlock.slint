@@ -283,8 +283,14 @@ export component EditorBlock inherits Rectangle {
         // handle hidden by that clause stayed clickable in the dark. The grid
         // adds its own hover: a cell's TouchArea takes the row's, and the
         // handle would disappear the moment the pointer reached the table.
+        //
+        // `pinned` is the phone's reveal: a finger never hovers, so on touch
+        // the row that holds the caret shows the handle instead — tapping a
+        // block selects it, and the ⋮⋮ that appears is the finger's door to
+        // the block menu (the long-press opens the same one).
         visible-flag: ta.has-hover || handle.hovered || tbl.inner-hover
             || clm.inner-hover;
+        pinned: UIState.touch-mode && editing;
         plus-clicked => {
             // anchor the insert menu below this block: bottom edge in list
             // coords + the text column x

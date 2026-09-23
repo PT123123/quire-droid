@@ -690,7 +690,12 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 .max(48.0)
                 .min(g.get_window_h() - 190.0);
             g.set_menu_y(y);
-            g.set_menu_x(240.0);
+            // 240 px is the desktop rail's right edge, and on that window it is
+            // also the anchor. The menu itself is 184 px (ContextMenu), so a
+            // phone — rail + menu is wider than the screen — pulls it left to
+            // stay on screen; a desktop window this narrow does not exist, so
+            // the clamp never moves the desktop popup.
+            g.set_menu_x(240.0f32.min((g.get_window_w() - 184.0 - 8.0).max(8.0)));
             g.set_menu_open(true);
         });
     }
@@ -7141,6 +7146,38 @@ pub fn apply_scene_overlay(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
                 g.set_block_menu_y(300.0);
                 g.set_block_menu_open_id(id);
             }
+        }
+        // A block under a finger: a tap gives a row the caret, and the ⋮⋮
+        // handle strip that a desktop reveals on hover is drawn for the
+        // selected row instead — the phone's only sight of it, since a finger
+        // never hovers (ADR-0097's hover model, second half). The shot is the
+        // proof that the handle is reachable at all on a phone.
+        "touch-select" => {
+            g.set_touch_mode(true);
+            g.set_sidebar_open(false);
+            let target = {
+                let d = state.doc.borrow();
+                d.page_blocks(core_page_id(state.open_page.get()))
+                    .iter()
+                    .find(|b| {
+                        b.kind == crate::core::BlockKind::Paragraph && !b.text.is_empty()
+                    })
+                    .map(|b| (b.id.0 as i32, b.text.len() as i32))
+            };
+            if let Some((id, len)) = target {
+                g.set_pending_caret(len);
+                g.set_editing_id(id);
+            }
+        }
+        // The phone's page menu: the drawer is up and a row's held press fired
+        // the callback the desktop's right-click uses. Its anchor is the desktop
+        // rail's 240 px, which on a 400 px screen would run the 184 px popup off
+        // the right edge — the clamp in `on_node_context` is what this scene
+        // exists to keep honest.
+        "touch-page-menu" => {
+            g.set_touch_mode(true);
+            g.set_sidebar_open(true);
+            g.invoke_node_context(106);
         }
         // the "+"-handle insert menu, anchored below an empty new line
         "plus" => {

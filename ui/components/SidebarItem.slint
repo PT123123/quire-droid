@@ -150,8 +150,13 @@ export component SidebarItem inherits Rectangle {
     // drag source for page rows: a press that moves past the threshold
     // starts the move-drag, a plain click still reaches the TouchArea below
     // (the block handle's pattern). Right-click passes through untouched.
+    //
+    // Touch mode drops it: inside the drawer a finger that lands on a row and
+    // slides is scrolling the list, and a page drag is the same gesture — the
+    // two used to be told apart by luck, which is how a slow slide became a
+    // row pick. The phone's reorder path is the row menu's Move up / Move to.
     drag := DragArea {
-        enabled: is-page && !renaming;
+        enabled: is-page && !renaming && !UIState.touch-mode;
         allow-move: true;
         data: UIState.page-drag-payload(node.id);
         drag-finished => {
@@ -159,17 +164,86 @@ export component SidebarItem inherits Rectangle {
         }
     }
 
+    // ── long-press → page menu (touch only) ──────────────────────────────
+    // A finger has no right button, so the row's context menu has no door on a
+    // phone; a held press opens it, the same stand-in a held press on an editor
+    // row uses for the ⋮⋮ menu (ADR-0097). Scroll defeats it three ways — a
+    // move past the slop stops the timer, a flick that stole the press arrives
+    // as `cancel`, and the tree's scroll y is compared against the value at
+    // press-down in case the gesture was taken without either. The same slop
+    // also keeps a slow slide from reading as a tap: a finger that travelled
+    // that far was scrolling, whatever the list decided to call it.
+    property <length> lp-x;
+    property <length> lp-y;
+    property <length> lp-scroll;
+    // a fired long-press must swallow the click the lifting finger produces
+    property <bool> lp-opened: false;
+    // a slide the list did not claim must not read as a tap either
+    property <bool> press-moved: false;
+
     ta := TouchArea {
         enabled: !renaming;
         mouse-cursor: MouseCursor.pointer;
         clicked => {
-            UIState.sidebar-selected-id = node.id;
-            UIState.node-clicked(node.id);
+            if (!UIState.touch-mode || (!lp-opened && !press-moved)) {
+                UIState.sidebar-selected-id = node.id;
+                UIState.node-clicked(node.id);
+            }
+            lp-opened = false;
+            press-moved = false;
         }
         pointer-event(event) => {
             if (event.kind == PointerEventKind.up
                 && event.button == PointerEventButton.right
                 && is-page) {
+                UIState.node-context(node.id);
+            }
+            if (UIState.touch-mode && is-page && !renaming) {
+                if (event.kind == PointerEventKind.down) {
+                    lp-x = ta.mouse-x;
+                    lp-y = ta.mouse-y;
+                    lp-scroll = UIState.tree-viewport-y;
+                    lp-opened = false;
+                    press-moved = false;
+                    lp-timer.stop();
+                    lp-timer.start();
+                }
+                if (event.kind == PointerEventKind.cancel) {
+                    // the flick took the press away (Slint resets the
+                    // TouchArea and hands the gesture to the list's scroll)
+                    lp-timer.stop();
+                    lp-opened = false;
+                    press-moved = false;
+                }
+                if (event.kind == PointerEventKind.up) {
+                    lp-timer.stop();
+                }
+                if (event.kind == PointerEventKind.move
+                    && (Math.abs(ta.mouse-x - lp-x) > 12px
+                        || Math.abs(ta.mouse-y - lp-y) > 12px)) {
+                    // a slide is a scroll, not a press held still
+                    lp-timer.stop();
+                    press-moved = true;
+                }
+            }
+        }
+    }
+
+    lp-timer := Timer {
+        interval: 500ms;
+        // Timer defaults to running — a realized tree must not wake 500 ms
+        // after being built (see EditorBlock's lp-timer)
+        running: false;
+        triggered => {
+            lp-timer.stop();
+            if (UIState.touch-mode
+                && Math.abs(ta.mouse-x - lp-x) < 12px
+                && Math.abs(ta.mouse-y - lp-y) < 12px
+                && Math.abs(UIState.tree-viewport-y - lp-scroll) < 1px) {
+                lp-opened = true;
+                press-moved = true;
+                // the same menu the desktop's right-click opens (and the TopBar
+                // ⋯ button): rename, duplicate, move, favorite, templates, delete
                 UIState.node-context(node.id);
             }
         }

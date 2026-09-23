@@ -8,6 +8,11 @@ import { UIState } from "../Types.slint";
 
 export component BlockHandle inherits Rectangle {
     in property <bool> visible-flag: false;
+    // A state-driven reveal, separate from `visible-flag`'s hover because it
+    // must not fade: on a touch screen the handle appears because a row is
+    // *selected*, not because a pointer arrived, and a finger wants the
+    // affordance the moment it taps. `visible-flag` keeps its fade.
+    in property <bool> pinned: false;
     in property <int> block-id: -1;
     callback plus-clicked();
     callback grip-clicked();
@@ -16,8 +21,9 @@ export component BlockHandle inherits Rectangle {
     out property <bool> hovered: ta1.has-hover || ta2.has-hover;
     width: 44px;
     height: 26px;
-    opacity: visible-flag ? 1 : 0;
-    animate opacity { duration: Theme.duration-fast; }
+    property <float> hover-fade: visible-flag ? 1 : 0;
+    animate hover-fade { duration: Theme.duration-fast; }
+    opacity: pinned ? 1 : hover-fade;
 
     HorizontalLayout {
         spacing: 0px;
