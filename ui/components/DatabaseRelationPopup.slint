@@ -80,7 +80,7 @@ export component DatabaseRelationPopup inherits PopupWindow {
             height: 20px;
             vertical-alignment: center;
             horizontal-alignment: right;
-            text: "Relation";
+            text: "关系";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;
@@ -154,8 +154,8 @@ export component DatabaseRelationPopup inherits PopupWindow {
                     font-size: Typography.size-ui;
                     color: Colors.text-muted;
                     text: UIState.db-relation-target == ""
-                        ? "Type to find a row"
-                        : "Type to find a row in " + UIState.db-relation-target;
+                        ? "输入以查找行"
+                        : "在其中查找行：" + UIState.db-relation-target;
                 }
             }
 
@@ -179,8 +179,8 @@ export component DatabaseRelationPopup inherits PopupWindow {
                 height: 20px;
                 vertical-alignment: center;
                 text: UIState.db-relation-text == ""
-                    ? "No rows to link yet."
-                    : "Nothing matches that.";
+                    ? "还没有可链接的行。"
+                    : "没有匹配项。";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-muted;
@@ -201,7 +201,7 @@ export component DatabaseRelationPopup inherits PopupWindow {
                     width: parent.width - 16px;
                     height: parent.height;
                     vertical-alignment: center;
-                    text: "‹ Change what this links to";
+                    text: "‹ 更改链接目标";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-caption;
                     color: Colors.text-muted;
@@ -235,8 +235,8 @@ export component DatabaseRelationPopup inherits PopupWindow {
                 height: 18px;
                 vertical-alignment: center;
                 text: UIState.db-relation-panel == 1
-                    ? "Which database should this link to?"
-                    : "‹ Show it back in which column?";
+                    ? "链接到哪个数据库？"
+                    : "‹ 在哪个列中反向显示？";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: UIState.db-relation-panel == 1 ? Colors.text-muted

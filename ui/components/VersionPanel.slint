@@ -92,7 +92,7 @@ export component VersionPanel inherits PopupWindow {
                         alignment: center;
                         spacing: 0px;
                         Text {
-                            text: "Version history"
+                            text: "版本历史"
                             + (UIState.versions-showing-diff ? "" : " — " + UIState.versions-title);
                             font-family: Typography.ui-font;
                             font-size: Typography.size-h3;
@@ -102,7 +102,7 @@ export component VersionPanel inherits PopupWindow {
                         }
                     }
                     Button {
-                        text: "Done";
+                        text: "完成";
                         clicked => {
                             UIState.versions-close();
                         }
@@ -200,7 +200,7 @@ export component VersionPanel inherits PopupWindow {
                         width: parent.width - 2 * Theme.spacing-md;
                         height: parent.height;
                         vertical-alignment: center;
-                        text: "Nothing differs. This version is the page.";
+                        text: "没有差异。此版本即为当前页面。";
                         font-family: Typography.ui-font;
                         font-size: Typography.size-ui;
                         color: Colors.text-muted;
@@ -289,7 +289,7 @@ export component VersionPanel inherits PopupWindow {
                         y: 0px;
                         height: parent.height;
                         vertical-alignment: center;
-                        text: "No versions of this page yet.\nName the way it reads now, and it stops being gone.";
+                        text: "此页面还没有版本。\n为它此刻的样子命名，它就不会消失。";
                         font-family: Typography.ui-font;
                         font-size: Typography.size-ui;
                         color: Colors.text-muted;
@@ -339,7 +339,7 @@ export component VersionPanel inherits PopupWindow {
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: Colors.text-muted;
-                    text: "Name this version…";
+                    text: "命名此版本…";
                 }
             }
 
@@ -352,14 +352,14 @@ export component VersionPanel inherits PopupWindow {
                     height: parent.height;
 
                     if UIState.versions-showing-diff : Button {
-                        text: "Back";
+                        text: "后退";
                         icon-name: "chevron-left";
                         clicked => {
                             UIState.version-back();
                         }
                     }
                     if UIState.versions-showing-diff : Button {
-                        text: "Delete version";
+                        text: "删除版本";
                         icon-name: "trash";
                         danger: true;
                         clicked => {
@@ -368,14 +368,14 @@ export component VersionPanel inherits PopupWindow {
                     }
                     Rectangle { horizontal-stretch: 1; }
                     if !UIState.versions-showing-diff : Button {
-                        text: "Save version";
+                        text: "保存版本";
                         primary: true;
                         clicked => {
                             UIState.version-save();
                         }
                     }
                     if UIState.versions-showing-diff : Button {
-                        text: "Restore";
+                        text: "恢复";
                         primary: true;
                         clicked => {
                             UIState.version-restore(UIState.versions-selected);

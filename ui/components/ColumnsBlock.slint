@@ -119,7 +119,7 @@ export component ColumnsBlock inherits Rectangle {
                         width: parent.width;
                         height: parent.height;
                         vertical-alignment: center;
-                        text: "Empty column";
+                        text: "空列";
                         font-family: Typography.ui-font;
                         font-size: Typography.size-caption;
                         color: Colors.text-muted;
@@ -140,13 +140,13 @@ export component ColumnsBlock inherits Rectangle {
                 spacing: Theme.spacing-xs;
                 e1 := TableEdge {
                     icon: "plus";
-                    label: "Add column";
+                    label: "添加列";
                     can: boxes < 3;
                     edge-clicked => { UIState.column-added(block.id); }
                 }
                 e2 := TableEdge {
                     icon: "x";
-                    label: "Delete column";
+                    label: "删除列";
                     can: boxes > 2;
                     edge-clicked => { UIState.column-removed(block.id); }
                 }

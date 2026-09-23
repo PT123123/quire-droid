@@ -906,7 +906,7 @@ export component EditorBlock inherits Rectangle {
         spacing: 2px;
 
         Text {
-            text: "Table of contents";
+            text: "目录";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             font-weight: Typography.weight-semibold;
@@ -939,7 +939,7 @@ export component EditorBlock inherits Rectangle {
             }
         }
         if block.toc-entries.length == 0 : Text {
-            text: "No headings on this page yet";
+            text: "此页面还没有标题";
             font-family: PageType.font-family;
             font-size: PageType.size-body;
             color: Colors.text-muted;
@@ -995,7 +995,7 @@ export component EditorBlock inherits Rectangle {
             // the address as the Open button will use it, so what the card
             // shows is what pressing it does — a bare domain reads as https://
             text: is-embed ? (block.text == ""
-                ? "No address yet" : UIState.embed-url(block.text)) : "";
+                ? "还没有地址" : UIState.embed-url(block.text)) : "";
             vertical-alignment: center;
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
@@ -1116,7 +1116,7 @@ export component EditorBlock inherits Rectangle {
         y: top-margin;
         width: content-width;
         visible: is-image && pic-aspect <= 0;
-        text: block.text + " · no picture";
+        text: block.text + " · 无图片";
         font-family: PageType.font-family;
         font-size: PageType.size-body;
         color: Colors.text-muted;

@@ -339,7 +339,7 @@ component DatabaseColumnsPopup inherits PopupWindow {
                     width: parent.width - 16px;
                     height: parent.height;
                     vertical-alignment: center;
-                    text: "+ New column";
+                    text: "+ 新建列";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: column-add.has-hover ? Colors.text-primary : Colors.text-secondary;
@@ -372,7 +372,7 @@ component DatabaseColumnsPopup inherits PopupWindow {
                 vertical-alignment: center;
                 overflow: elide;
                 text: UIState.db-columns-property < 0
-                    ? "New column"
+                    ? "新建列"
                     : "‹ " + UIState.db-columns-title;
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
@@ -446,7 +446,7 @@ component LinkDialog inherits PopupWindow {
             spacing: Theme.spacing-md;
 
             Text {
-                text: "Add link";
+                text: "添加链接";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-h3;
                 font-weight: Typography.weight-semibold;
@@ -484,14 +484,14 @@ component LinkDialog inherits PopupWindow {
             HorizontalLayout {
                 spacing: Theme.spacing-sm;
                 Button {
-                    text: "Remove";
+                    text: "移除";
                     clicked => {
                         UIState.link-remove();
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
                 Button {
-                    text: "Apply";
+                    text: "应用";
                     primary: true;
                     clicked => {
                         UIState.link-apply();

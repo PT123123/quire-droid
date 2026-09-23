@@ -129,7 +129,7 @@ export component DatabaseCell inherits Rectangle {
             y: 0px;
             height: parent.height;
             vertical-alignment: center;
-            text: cell.text == "" ? "Empty" : cell.text;
+            text: cell.text == "" ? "空" : cell.text;
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: cell.text == "" ? Colors.text-muted : Colors.text-primary;
@@ -237,7 +237,7 @@ export component DatabaseCell inherits Rectangle {
             width: parent.width - 12px;
             height: 26px;
             vertical-alignment: center;
-            text: "No options yet";
+            text: "还没有选项";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;

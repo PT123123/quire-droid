@@ -81,7 +81,7 @@ fn create_then_open_page_lands_empty() {
     let id = state.create_page(None);
     assert_eq!(state.open_page.get(), id);
     assert_eq!(state.blocks.row_count(), 0, "new page shows the empty state");
-    assert_eq!(state.workspace.borrow().title_of(id), Some("Untitled"));
+    assert_eq!(state.workspace.borrow().title_of(id), Some("无标题"));
     // ...and the empty state is not a dead end: it can make its own first
     // row, which is the only insert in the app with nothing to anchor on
     let started = state.start_page().expect("the empty page takes a paragraph");

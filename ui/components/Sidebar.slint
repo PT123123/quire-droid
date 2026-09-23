@@ -1,5 +1,5 @@
 // Left navigation column: workspace header, pinned entries, page tree,
-// and a footer with theme toggle and build info.
+// and a footer with build info.
 
 import { Theme } from "../Theme.slint";
 import { Colors } from "../Colors.slint";
@@ -92,7 +92,7 @@ export component Sidebar inherits Rectangle {
                     }
                 }
                 Text {
-                    text: "Workspace";
+                    text: "工作区";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     font-weight: Typography.weight-semibold;
@@ -110,17 +110,17 @@ export component Sidebar inherits Rectangle {
         }
 
         // ---- pinned rows: search / settings ----
+        // Touch devices have no keyboard, so these rows carry no chord hints.
         SidebarPinnedRow {
             icon-name: "search";
-            label: "Search";
-            shortcut-hint: "Ctrl P";
+            label: "搜索";
             clicked => {
                 UIState.search-open-requested();
             }
         }
         SidebarPinnedRow {
             icon-name: "settings";
-            label: "Settings";
+            label: "设置";
             clicked => {
                 UIState.settings-open-requested();
             }
@@ -135,7 +135,7 @@ export component Sidebar inherits Rectangle {
         if UIState.workspace-empty : Text {
             x: Theme.spacing-md;
             height: 24px;
-            text: "No pages yet — Ctrl+N";
+            text: "还没有页面";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;
@@ -150,14 +150,6 @@ export component Sidebar inherits Rectangle {
                 width: parent.width - 2 * Theme.spacing-xs;
                 height: 1px;
                 background: Colors.border;
-            }
-        }
-        SidebarPinnedRow {
-            icon-name: UIState.dark ? "sun" : "moon";
-            label: UIState.dark ? "Light mode" : "Dark mode";
-            shortcut-hint: "Ctrl+Shift+L";
-            clicked => {
-                UIState.toggle-theme();
             }
         }
         Rectangle {

@@ -92,7 +92,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
         ui.global::<UIState>().on_sync_now(move |id| {
             let g = gw.upgrade().unwrap();
             if let Some(peer) = s.sync_peers().into_iter().find(|p| p.id == id.as_str()) {
-                g.set_sync_status(format!("Syncing with {}…", peer.name).into());
+                g.set_sync_status(format!("正在与 {} 同步…", peer.name).into());
                 let _ = cmd.send(crate::services::sync::engine::Cmd::SyncWith(peer));
             }
         });
@@ -104,7 +104,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
         ui.global::<UIState>().on_sync_pair(move |id| {
             let g = gw.upgrade().unwrap();
             if let Some(peer) = s.sync_peers().into_iter().find(|p| p.id == id.as_str()) {
-                g.set_sync_status(format!("Asking {} to pair…", peer.name).into());
+                g.set_sync_status(format!("正在请求 {} 配对…", peer.name).into());
                 let _ = cmd.send(crate::services::sync::engine::Cmd::PairWith(peer));
             }
         });
@@ -115,7 +115,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
         ui.global::<UIState>().on_sync_forget(move |id| {
             let g = gw.upgrade().unwrap();
             s.sync_forget_peer(&id);
-            g.set_sync_status("Device forgotten.".into());
+            g.set_sync_status("已忘记设备。".into());
             refresh_sync_ui(&g, &s);
         });
     }
@@ -127,9 +127,9 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
             s.sync_set_auto(on);
             g.set_sync_status(
                 if on {
-                    "Automatic sync on — paired devices sync every minute."
+                    "自动同步已开启 — 已配对设备每分钟同步一次。"
                 } else {
-                    "Automatic sync off — use Sync now."
+                    "自动同步已关闭 — 请手动「立即同步」。"
                 }
                 .into(),
             );
@@ -151,7 +151,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
                 },
                 None => (text.clone(), crate::services::sync::SYNC_PORT),
             };
-            g.set_sync_status(format!("Looking for a Quire at {ip}:{port}…").into());
+            g.set_sync_status(format!("正在查找 {ip}:{port} 上的 Quire…").into());
             let _ = cmd.send(crate::services::sync::engine::Cmd::ProbeAdd { ip, port });
         });
     }
@@ -230,8 +230,8 @@ fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::services::
                 .any(|p| p.id == peer.id && p.paired);
             if inbound_push && !known {
                 let message = format!(
-                    "{} pushed a snapshot but is not paired — refused",
-                    if peer.name.is_empty() { "An unknown device" } else { &peer.name }
+                    "{} 推送了快照，但未配对 — 已拒绝",
+                    if peer.name.is_empty() { "未知设备" } else { &peer.name }
                 );
                 state.sync_log_push(&peer.id, false, &message);
                 g.set_sync_status(message.clone().into());
@@ -246,12 +246,12 @@ fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::services::
                     open(g, state, state.open_page.get());
                     state.reproject_blocks();
                     state.db_refresh_page(None);
-                    state.sync_log_push(&peer.name, true, "merged a peer's changes");
-                    g.set_sync_status(format!("Synced with {}.", peer.name).into());
+                    state.sync_log_push(&peer.name, true, "已合并对端的更改");
+                    g.set_sync_status(format!("已与 {} 同步。", peer.name).into());
                 }
                 Err(e) => {
                     state.sync_log_push(&peer.name, false, e);
-                    g.set_sync_status(format!("Sync failed: {e}").into());
+                    g.set_sync_status(format!("同步失败：{e}").into());
                 }
             }
             // whoever reached us is trusted from here on — that is the
@@ -275,8 +275,8 @@ fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::services::
                 device.port,
                 Some(true),
             );
-            state.sync_log_push(&device.name, true, "paired");
-            g.set_sync_status(format!("{} asked to pair and is trusted now.", device.name).into());
+            state.sync_log_push(&device.name, true, "已配对");
+            g.set_sync_status(format!("{} 请求配对，现已信任。", device.name).into());
             let _ = reply.send(true);
         }
         Job::Discovered { device, ip } => {
@@ -298,8 +298,8 @@ fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::services::
                 device.port,
                 Some(true),
             );
-            state.sync_log_push(&device.name, true, "paired");
-            g.set_sync_status(format!("Paired with {}.", device.name).into());
+            state.sync_log_push(&device.name, true, "已配对");
+            g.set_sync_status(format!("已与 {} 配对。", device.name).into());
         }
         Job::SyncDone {
             peer_id,
@@ -314,7 +314,7 @@ fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::services::
                 g.set_sync_status(message.clone().into());
                 // a failed round is worth the notice bar: the user asked for
                 // a sync (or left auto on) and nothing moved
-                g.set_db_notice(format!("Sync: {message}").into());
+                g.set_db_notice(format!("同步：{message}").into());
             }
         }
         Job::AutoTick => {}
@@ -332,18 +332,18 @@ fn refresh_sync_ui(g: &UIState<'_>, state: &AppState) {
             // on the network right now
             let online = now.saturating_sub(p.last_seen) < 15;
             let status = if !p.paired {
-                "found · not paired".to_string()
+                "已发现 · 未配对".to_string()
             } else if p.last_sync.is_empty() {
-                "paired · never synced".to_string()
+                "已配对 · 从未同步".to_string()
             } else {
-                format!("paired · synced {}", p.last_sync)
+                format!("已配对 · 已同步 {}", p.last_sync)
             };
             crate::SyncRow {
                 id: p.id.into(),
                 label: format!(
                     "{} ({})",
-                    if p.name.is_empty() { "Device" } else { &p.name },
-                    if p.kind.is_empty() { "unknown" } else { &p.kind }
+                    if p.name.is_empty() { "设备" } else { &p.name },
+                    if p.kind.is_empty() { "未知" } else { &p.kind }
                 )
                 .into(),
                 status: status.into(),
@@ -752,7 +752,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 // that answer for an empty library instead.
                 if s.template_list().is_empty() {
                     g.set_menu_open(false);
-                    g.set_db_notice("No templates yet — save this page as one first.".into());
+                    g.set_db_notice("还没有模板 — 先把此页面保存为模板。".into());
                     return;
                 }
                 s.fill_template_pick(action);
@@ -881,12 +881,12 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                             .workspace
                             .borrow()
                             .title_of(id)
-                            .unwrap_or("Untitled template")
+                            .unwrap_or("未命名模板")
                             .to_string();
                         s.save_as_template(id);
                         // `…`, not `⋯` — see `AppState::note_locked`'s line.
                         g.set_db_notice(
-                            format!("Saved \"{name}\" as a template — … → Templates.").into(),
+                            format!("已将“{name}”保存为模板 — … → 模板。").into(),
                         );
                     }
                 }
@@ -912,7 +912,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                             // from the one the user clicked.
                             if id != s.open_page.get() {
                                 g.set_db_notice(
-                                    "Open that page first — a template inserts into the page on screen."
+                                    "请先打开该页面 — 模板会插入到当前显示的页面。"
                                         .into(),
                                 );
                             } else if let Some(first) = s.insert_template(None, template) {
@@ -926,7 +926,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                                 // (ADR-0048), and overwriting it with a vaguer
                                 // one would hide the real reason.
                                 g.set_db_notice(
-                                    format!("\"{name}\" has no blocks to insert.").into(),
+                                    format!("“{name}”没有可插入的块。").into(),
                                 );
                             }
                         }
@@ -948,14 +948,14 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                             // drawn in the danger colour to say so. What it must
                             // not be is silent, so the line names the loss.
                             s.delete_page(template);
-                            g.set_db_notice(format!("Deleted the \"{name}\" template.").into());
+                            g.set_db_notice(format!("已删除“{name}”模板。").into());
                         }
                         _ => {}
                     }
                 }
                 crate::app::state::MENU_DELETE => {
                     let (_title, message) = s.delete_dialog_text(id);
-                    g.set_dialog_title("Delete page?".into());
+                    g.set_dialog_title("删除页面？".into());
                     g.set_dialog_message(message.into());
                     g.set_dialog_open(true);
                 }
@@ -1004,10 +1004,10 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                     g.set_versions_selected(-1);
                     s.fill_versions(page);
                     g.set_db_notice(
-                        format!("Saved \"{name}\" — now compare it or restore it from here.").into(),
+                        format!("已保存“{name}” — 现在可以在此比较或恢复。").into(),
                     );
                 }
-                Err(e) => g.set_db_notice(format!("The version was not saved: {e}").into()),
+                Err(e) => g.set_db_notice(format!("版本未能保存：{e}").into()),
             }
         });
     }
@@ -1024,7 +1024,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
             let lines = match s.version_diff(page, created) {
                 Ok(lines) => lines,
                 Err(e) => {
-                    g.set_db_notice(format!("That version could not be read: {e}").into());
+                    g.set_db_notice(format!("无法读取该版本：{e}").into());
                     return;
                 }
             };
@@ -1056,14 +1056,14 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                     g.set_versions_selected(-1);
                     s.fill_versions(page);
                     g.set_db_notice(format!(
-                        "Restored {count} lines from that version — Ctrl+Z brings back what it replaced."
+                        "已从该版本恢复 {count} 行 — Ctrl+Z 可以恢复它所替换的内容。"
                     ).into());
                 }
                 // A locked page put its own line up inside the refusal, and a
                 // vaguer one here would overwrite the only wording that says
                 // what to do about it (ADR-0048).
                 Err(e) if !s.page_locked() => {
-                    g.set_db_notice(format!("The version was not restored: {e}").into())
+                    g.set_db_notice(format!("版本未能恢复：{e}").into())
                 }
                 Err(_) => {}
             }
@@ -1080,7 +1080,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 return;
             };
             if let Err(e) = s.delete_version(page, created) {
-                g.set_db_notice(format!("The version was not deleted: {e}").into());
+                g.set_db_notice(format!("版本未能删除：{e}").into());
                 return;
             }
             // No confirm dialog, for the reason the template delete has: this is
@@ -1091,7 +1091,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
             g.set_versions_showing_diff(false);
             g.set_versions_selected(-1);
             s.fill_versions(page);
-            g.set_db_notice(format!("Deleted the version “{label}”. The page itself is unchanged.").into());
+            g.set_db_notice(format!("已删除版本“{label}”。页面本身未变。").into());
         });
     }
 
@@ -1276,7 +1276,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                     let cur = s.open_page.get();
                     if s.workspace.borrow().contains(cur) {
                         let (_t, message) = s.delete_dialog_text(cur);
-                        g.set_dialog_title("Delete page?".into());
+                        g.set_dialog_title("删除页面？".into());
                         g.set_dialog_message(message.into());
                         g.set_dialog_open(true);
                     }
@@ -1638,7 +1638,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                             g.set_editing_id(-1);
                             true
                         } else {
-                            g.set_db_notice("That clipboard picture could not be stored.".into());
+                            g.set_db_notice("无法保存剪贴板中的图片。".into());
                             false
                         }
                     }
@@ -1720,7 +1720,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
             let g = gw.upgrade().unwrap();
             let text = match s.backup_now() {
                 Ok(msg) => msg,
-                Err(e) => format!("Backup failed: {e}"),
+                Err(e) => format!("备份失败：{e}"),
             };
             g.set_db_notice(text.into());
         });
@@ -1732,7 +1732,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
             let g = gw.upgrade().unwrap();
             let text = match s.reclaim_attachments() {
                 Ok(msg) => msg,
-                Err(e) => format!("Reclaim failed: {e}"),
+                Err(e) => format!("清理失败：{e}"),
             };
             g.set_db_notice(text.into());
         });
@@ -2591,7 +2591,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 // the way D6's one creation row left its user: a column that
                 // computes has nothing to show until one line of it exists.
                 let Some(created) = s.db_column_add(block, kind) else {
-                    g.set_db_notice("That column could not be added.".into());
+                    g.set_db_notice("无法添加该列。".into());
                     return;
                 };
                 db_show_columns(&g, &s, block);
@@ -2723,7 +2723,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
             let property = g.get_db_relation_property();
             let row = g.get_db_relation_record();
             if !s.db_relation_toggle(block, row as i64, property, record) {
-                g.set_db_notice("That link could not be written.".into());
+                g.set_db_notice("无法写入该链接。".into());
                 return;
             }
             // The cell's own list changed, so its painted text did — one row,
@@ -3156,7 +3156,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                         g.set_editing_id(-1);
                         if !s.page_locked() {
                             g.set_db_notice(
-                                format!("\"{name}\" has no blocks to insert.").into(),
+                                format!("“{name}”没有可插入的块。").into(),
                             );
                         }
                     }
@@ -4616,7 +4616,7 @@ pub fn import_lan_pages(
     let mut imported = 0;
     for (title, md) in pages {
         let safe_title = if title.trim().is_empty() {
-            "Imported".to_string()
+            "已导入".to_string()
         } else {
             title.trim().to_string()
         };
@@ -4651,7 +4651,7 @@ pub fn import_lan_pages(
         imported += 1;
     }
     if imported > 0 {
-        g.set_db_notice(format!("Imported {imported} page(s) from {url}").into());
+        g.set_db_notice(format!("已从 {url} 导入 {imported} 个页面").into());
         open(g, state, state.open_page.get());
         state.reproject_blocks();
     }
@@ -4676,17 +4676,17 @@ fn pick_attachment(
 ) {
     let pictures = kind == crate::core::BlockKind::Image;
     let picker = crate::platform::picker::Picker::open().title(if pictures {
-        "Insert a picture"
+        "插入图片"
     } else {
-        "Attach a file"
+        "附加文件"
     });
     // The picture picker constrains the choice, because the decoder reads four
     // formats — png, jpeg, bmp, gif — and nothing else. The file one must not:
     // naming any type is the whole point of the kind.
     let picker = if pictures {
-        picker.filter("Pictures", PICTURE_EXTS)
+        picker.filter("图片", PICTURE_EXTS)
     } else {
-        picker.filter("All files", &["*"])
+        picker.filter("所有文件", &["*"])
     };
     let Some(path) = ask(g, picker) else {
         return;
@@ -4713,9 +4713,9 @@ fn pick_attachment(
     if !placed {
         g.set_db_notice(
             if pictures {
-                "That picture did not fit into the page."
+                "该图片无法放入页面。"
             } else {
-                "That file did not fit into the page."
+                "该文件无法放入页面。"
             }
             .into(),
         );
@@ -4730,8 +4730,8 @@ fn pick_cover(g: &UIState<'_>, s: &Rc<AppState>, page: i32) {
     let Some(path) = ask(
         g,
         crate::platform::picker::Picker::open()
-            .title("Choose a cover")
-            .filter("Pictures", PICTURE_EXTS),
+            .title("选择封面")
+            .filter("图片", PICTURE_EXTS),
     ) else {
         return;
     };
@@ -4748,7 +4748,7 @@ fn pick_cover(g: &UIState<'_>, s: &Rc<AppState>, page: i32) {
 /// §三十七 批次 A).
 fn attachment_action(g: &UIState<'_>, s: &Rc<AppState>, id: i32, save: bool) {
     let Some(att) = s.attachment_row(id) else {
-        g.set_db_notice("That attachment belongs to another library.".into());
+        g.set_db_notice("该附件属于另一个库。".into());
         return;
     };
     let label = att.name.clone();
@@ -4757,24 +4757,24 @@ fn attachment_action(g: &UIState<'_>, s: &Rc<AppState>, id: i32, save: bool) {
         let Some(target) = ask(
             g,
             crate::platform::picker::Picker::save()
-                .title("Save attachment as")
+                .title("另存附件为")
                 .name(&s.store.save_name(&att)),
         ) else {
             return;
         };
         let notice = match s.store.export_to(&att, &target) {
-            Ok(()) => format!("Saved {label}."),
+            Ok(()) => format!("已保存 {label}。"),
             Err(e) => e.to_string(),
         };
         g.set_db_notice(notice.into());
         return;
     }
     if !path.is_file() {
-        g.set_db_notice(format!("{label}: the stored file is gone.").into());
+        g.set_db_notice(format!("{label}：存储的文件已丢失。").into());
         return;
     }
     if !crate::platform::open_with_default(&path) {
-        g.set_db_notice(format!("Nothing here opens {label}.").into());
+        g.set_db_notice(format!("没有程序可以打开 {label}。").into());
     }
 }
 
@@ -4805,11 +4805,11 @@ fn copy_current_page_markdown(g: &UIState<'_>, s: &Rc<AppState>) {
         )
     };
     let notice = if md.trim().is_empty() {
-        "This page has nothing to copy yet.".to_string()
+        "此页面还没有可复制的内容。".to_string()
     } else if crate::platform::copy_to_clipboard(&md) {
-        "Page copied as Markdown.".to_string()
+        "已复制页面为 Markdown。".to_string()
     } else {
-        "Could not reach the clipboard.".to_string()
+        "无法访问剪贴板。".to_string()
     };
     g.set_db_notice(notice.into());
 }
@@ -4849,7 +4849,7 @@ fn open_version_panel(g: &UIState<'_>, state: &Rc<AppState>, page: i32) {
         .workspace
         .borrow()
         .title_of(page)
-        .unwrap_or("Untitled")
+        .unwrap_or("无标题")
         .to_string();
     g.set_versions_title(title.into());
     g.set_versions_showing_diff(false);
@@ -4869,7 +4869,7 @@ fn export_template_markdown(
     name: &str,
 ) {
     let Some(md) = state.template_markdown(template) else {
-        g.set_db_notice("That row is no longer a template.".into());
+        g.set_db_notice("该行已不再是模板。".into());
         return;
     };
     if let Some(path) = ask(
@@ -4879,8 +4879,8 @@ fn export_template_markdown(
             .name(&format!("{name}.md")),
     ) {
         match std::fs::write(&path, md) {
-            Ok(()) => g.set_db_notice(format!("Exported \"{name}\" to {}", path.display()).into()),
-            Err(e) => g.set_db_notice(format!("Export failed: {e}").into()),
+            Ok(()) => g.set_db_notice(format!("已导出“{name}”到 {}", path.display()).into()),
+            Err(e) => g.set_db_notice(format!("导出失败：{e}").into()),
         }
     }
 }
@@ -4897,13 +4897,13 @@ fn import_template_dialog(g: &UIState<'_>, state: &Rc<AppState>) {
         return;
     };
     let Ok(src) = std::fs::read_to_string(&path) else {
-        g.set_db_notice(format!("Cannot read {}", path.display()).into());
+        g.set_db_notice(format!("无法读取 {}", path.display()).into());
         return;
     };
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Imported template".into());
+        .unwrap_or_else(|| "导入的模板".into());
     let id = state.import_template(&name, &src);
     // The count is the fact worth reporting: a Markdown file that parses to no
     // blocks lands as an empty template, and the menu would offer it forever.
@@ -4912,10 +4912,10 @@ fn import_template_dialog(g: &UIState<'_>, state: &Rc<AppState>) {
         d.page_blocks(core_page_id(id)).len()
     };
     if blocks == 0 {
-        g.set_db_notice(format!("Imported \"{name}\" as an empty template.").into());
+        g.set_db_notice(format!("已导入“{name}”为空模板。").into());
     } else {
         g.set_db_notice(
-            format!("Imported \"{name}\" as a template ({blocks} blocks).").into(),
+            format!("已导入“{name}”为模板（{blocks} 个块）。").into(),
         );
     }
 }
@@ -4973,10 +4973,10 @@ pub fn import_from_path(g: &UIState<'_>, state: &Rc<AppState>, path: &std::path:
     let title = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Imported".into());
+        .unwrap_or_else(|| "已导入".into());
 
     let new_id = state.create_page(None);
-    g.set_db_notice(format!("Imported {} as a new page", title).into());
+    g.set_db_notice(format!("已导入 {} 为新页面", title).into());
     let core_page = crate::core::Page {
         id: crate::core::PageId(new_id as u32 as u64),
         title: title.clone(),
@@ -4997,7 +4997,7 @@ pub fn import_from_path(g: &UIState<'_>, state: &Rc<AppState>, path: &std::path:
         let mut alloc = || doc.alloc_block_id();
         crate::services::import_service::import_markdown(&src, &core_page, &mut alloc)
     };
-    // the service's PageCreated replaces create_page's "Untitled" record
+    // the service's PageCreated replaces create_page's "无标题" record
     let rest = changes.into_iter().skip(1).collect::<Vec<_>>();
     {
         let mut d = state.doc.borrow_mut();
@@ -5787,7 +5787,7 @@ fn seed_versions(state: &Rc<AppState>, g: &UIState<'_>, page: i32) -> Vec<(i64, 
             .workspace
             .borrow()
             .title_of(page)
-            .unwrap_or("Untitled")
+            .unwrap_or("无标题")
             .to_string()
             .into(),
     );
@@ -5959,7 +5959,7 @@ pub fn apply_scene(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
             // per-user profile since ADR-0020; a sweep shot that invents copy
             // gets judged as if users read it)
             g.set_db_notice(
-                "the database was damaged — restored from a backup (C:\\Users\\you\\AppData\\Roaming\\Quire\\quire.db.bak1).".into(),
+                "数据库已损坏 — 已从备份恢复（C:\\Users\\you\\AppData\\Roaming\\Quire\\quire.db.bak1）。".into(),
             );
         }
 
@@ -7092,7 +7092,7 @@ pub fn apply_scene_overlay(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
         }
         "dialog" => {
             let (_title, message) = state.delete_dialog_text(105);
-            g.set_dialog_title("Delete page?".into());
+            g.set_dialog_title("删除页面？".into());
             g.set_dialog_message(message.into());
             g.set_dialog_open(true);
         }

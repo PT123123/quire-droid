@@ -103,7 +103,7 @@ export component DatabaseSwitcher inherits Rectangle {
         if root.tabs.length == 0 : Text {
             height: parent.height;
             vertical-alignment: center;
-            text: "View";
+            text: "视图";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;
@@ -138,7 +138,7 @@ export component DatabaseSwitcher inherits Rectangle {
             // are drawn now (D7 lit the eighth, `chart`, whose plot is the
             // group list the board's columns come from); the `drawn` fold
             // stays for a ninth a later build might name.
-            for layout[index] in ["Table", "Board", "List", "Calendar", "Gallery", "Timeline", "Form", "Chart"] : Rectangle {
+            for layout[index] in ["表格", "看板", "列表", "日历", "图库", "时间线", "表单", "图表"] : Rectangle {
                 property <bool> drawn: index < 8;
                 height: 26px;
                 border-radius: Theme.radius-xs;
@@ -151,7 +151,7 @@ export component DatabaseSwitcher inherits Rectangle {
                     height: parent.height;
                     vertical-alignment: center;
                     overflow: elide;
-                    text: drawn ? layout : layout + " - not in this build yet";
+                    text: drawn ? layout : layout + " - 此版本尚未支持";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-caption;
                     color: drawn ? Colors.text-primary : Colors.text-muted;

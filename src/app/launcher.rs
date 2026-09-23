@@ -171,6 +171,28 @@ fn leak_timer(t: Timer) {
     std::mem::forget(t);
 }
 
+/// Pin the window's scale factor, so the UI is drawn at `scale` rather than at
+/// the one the window system reports (M9.d — the Android shell's proportion).
+///
+/// Slint 1.18 has no public setter for this: `Window` exposes `scale_factor()`
+/// and nothing that writes one, and `WindowAdapter` is the backend's. The one
+/// door that exists is `WindowInner::set_const_scale_factor`, which is the
+/// `pub` method the *generated* code already calls when `slint-build` was given
+/// a compile-time factor — so it is reached the way that code reaches it, via
+/// `private_unstable_api`. Two facts keep it honest: it is only ever reached
+/// with a factor `platform::ui_scale()` produced (never on the desktop), and a
+/// constant factor is exactly what is wanted here — the backend sets its own
+/// `dpi / 160` when it handles `InitWindow`, and a constant one turns that later
+/// write into a no-op, which is what leaves this value standing. Nothing below
+/// this line may call it again; the second call is silently ignored.
+fn apply_ui_scale(ui: &AppWindow, scale: f32) {
+    if !(scale > 0.0) {
+        return;
+    }
+    slint::private_unstable_api::re_exports::WindowInner::from_pub(ui.window())
+        .set_const_scale_factor(scale);
+}
+
 /// The desktop entry: `src/main.rs` calls this and nothing else.
 pub fn desktop_main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
@@ -400,6 +422,13 @@ pub fn run(start: std::time::Instant, touch_mode: bool) -> Result<(), String> {
     };
     let ui = AppWindow::new().map_err(|e| e.to_string())?;
     mark("appwindow_new");
+    // M9.d: the shell's proportion, on top of the density the backend would
+    // otherwise use. Landing it here rather than in `android_main` is the whole
+    // trick — a scale factor needs a `Window`, and this is the first moment one
+    // exists (`AppWindow::new` is what asks the platform for it).
+    if let Some(scale) = crate::platform::ui_scale() {
+        apply_ui_scale(&ui, scale);
+    }
     // A phone has no pointer, and the chrome that assumes one is the whole
     // difference between the two shells. The flag is set before the first layout
     // pass so nothing animates from the desktop shape into the touch one; the
@@ -420,12 +449,12 @@ pub fn run(start: std::time::Instant, touch_mode: bool) -> Result<(), String> {
     let mut notices: Vec<String> = Vec::new();
     if let Some(from) = &recovered {
         notices.push(format!(
-            "the database was damaged — restored from a backup ({})",
+            "数据库已损坏 — 已从备份恢复（{}）",
             from.display()
         ));
     }
     if moved_from.is_some() {
-        notices.push("the library moved to your user profile".into());
+        notices.push("资料库已移至用户配置目录".into());
     }
     if !notices.is_empty() {
         state.set_db_notice(format!("{}.", notices.join("; ")));

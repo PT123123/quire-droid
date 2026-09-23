@@ -335,23 +335,23 @@ export component TableBlock inherits Rectangle {
                 spacing: Theme.spacing-xs;
                 e1 := TableEdge {
                     icon: "plus";
-                    label: "Add row";
+                    label: "添加行";
                     edge-clicked => { UIState.table-row-added(root.block.id); }
                 }
                 e2 := TableEdge {
                     icon: "plus";
-                    label: "Add column";
+                    label: "添加列";
                     edge-clicked => { UIState.table-column-added(root.block.id); }
                 }
                 e3 := TableEdge {
                     icon: "x";
-                    label: "Delete row";
+                    label: "删除行";
                     can: root.rows > 1;
                     edge-clicked => { UIState.table-row-removed(root.block.id); }
                 }
                 e4 := TableEdge {
                     icon: "x";
-                    label: "Delete column";
+                    label: "删除列";
                     can: root.cols > 1;
                     edge-clicked => { UIState.table-column-removed(root.block.id); }
                 }

@@ -58,7 +58,7 @@ export component BacklinkPanel inherits Rectangle {
             alignment: start;
 
             Text {
-                text: "Linked from";
+                text: "链接自";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 font-weight: Typography.weight-semibold;
@@ -134,7 +134,7 @@ export component BacklinkPanel inherits Rectangle {
                 Text {
                     text: row.text != ""
                         ? row.text
-                        : (row.block-level ? "is a link to this page" : "(empty block)");
+                        : (row.block-level ? "是指向此页面的链接" : "（空块）");
                     font-family: PageType.font-family;
                     font-size: PageType.size-body;
                     color: row.text != "" ? Colors.text-primary : Colors.text-muted;

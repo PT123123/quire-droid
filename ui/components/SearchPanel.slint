@@ -99,7 +99,7 @@ export component SearchPanel inherits PopupWindow {
                             font-family: Typography.ui-font;
                             font-size: Typography.size-ui-lg;
                             color: Colors.text-muted;
-                            text: "Search pages…";
+                            text: "搜索页面…";
                         }
                     }
                 }
@@ -196,8 +196,8 @@ export component SearchPanel inherits PopupWindow {
                     height: parent.height;
                     vertical-alignment: center;
                     text: UIState.search-query == ""
-                        ? "Type to search titles and content."
-                        : "No pages match.";
+                        ? "输入以搜索标题和内容。"
+                        : "没有匹配的页面。";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: Colors.text-muted;
@@ -205,10 +205,10 @@ export component SearchPanel inherits PopupWindow {
             }
 
             footer := Rectangle {
-                height: 26px;
-                Text {
+                height: UIState.touch-mode ? 0px : 26px;
+                if !UIState.touch-mode : Text {
                     x: Theme.spacing-md;
-                    text: "↑ ↓ navigate · Enter open · Esc dismiss";
+                    text: "↑ ↓ 选择 · Enter 打开 · Esc 关闭";
                     font-size: Typography.size-caption;
                     color: Colors.text-muted;
                     vertical-alignment: center;

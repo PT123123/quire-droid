@@ -129,7 +129,7 @@ export component SettingsDialog inherits PopupWindow {
                 spacing: Theme.spacing-md;
 
                 Text {
-                    text: "Settings";
+                    text: "设置";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-h3;
                     font-weight: Typography.weight-semibold;
@@ -137,7 +137,7 @@ export component SettingsDialog inherits PopupWindow {
             }
 
             Text {
-                text: "APPEARANCE";
+                text: "外观";
                 font-size: Typography.size-caption;
                 font-weight: Typography.weight-semibold;
                 color: Colors.text-muted;
@@ -145,14 +145,14 @@ export component SettingsDialog inherits PopupWindow {
             HorizontalLayout {
                 spacing: Theme.spacing-sm;
                 ThemeOption {
-                    label: "Light";
+                    label: "浅色";
                     active: !UIState.dark;
                     clicked => {
                         UIState.set-dark(false);
                     }
                 }
                 ThemeOption {
-                    label: "Dark";
+                    label: "深色";
                     active: UIState.dark;
                     clicked => {
                         UIState.set-dark(true);
@@ -163,7 +163,7 @@ export component SettingsDialog inherits PopupWindow {
             Rectangle { height: 1px; background: Colors.border; }
 
             Text {
-                text: "SHARING";
+                text: "共享";
                 font-size: Typography.size-caption;
                 font-weight: Typography.weight-semibold;
                 color: Colors.text-muted;
@@ -171,7 +171,7 @@ export component SettingsDialog inherits PopupWindow {
             HorizontalLayout {
                 spacing: Theme.spacing-sm;
                 Text {
-                    text: "Share read-only on the LAN (port 5877, applies after restart)";
+                    text: "在局域网内只读共享（端口 5877，重启后生效）";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: Colors.text-secondary;
@@ -210,7 +210,7 @@ export component SettingsDialog inherits PopupWindow {
             // one line each, and the two doors into a new pairing — the
             // announcements the engine hears, or an address typed by hand.
             Text {
-                text: "SYNC";
+                text: "同步";
                 font-size: Typography.size-caption;
                 font-weight: Typography.weight-semibold;
                 color: Colors.text-muted;
@@ -218,7 +218,7 @@ export component SettingsDialog inherits PopupWindow {
             HorizontalLayout {
                 spacing: Theme.spacing-sm;
                 Text {
-                    text: "Sync with the other Quire devices on this network (port 5878)";
+                    text: "与本网络上的其他 Quire 设备同步（端口 5878）";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: Colors.text-secondary;
@@ -253,7 +253,7 @@ export component SettingsDialog inherits PopupWindow {
             for row in UIState.sync-rows : VerticalLayout {
                 spacing: 2px;
                 Text {
-                    text: row.label + (row.online ? " · online" : "");
+                    text: row.label + (row.online ? " · 在线" : "");
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: Colors.text-primary;
@@ -271,19 +271,19 @@ export component SettingsDialog inherits PopupWindow {
                         overflow: elide;
                     }
                     if !row.paired : Button {
-                        text: "Pair";
+                        text: "配对";
                         clicked => {
                             UIState.sync-pair(row.id);
                         }
                     }
                     if row.paired : Button {
-                        text: "Sync now";
+                        text: "立即同步";
                         clicked => {
                             UIState.sync-now(row.id);
                         }
                     }
                     Button {
-                        text: "Forget";
+                        text: "忘记";
                         clicked => {
                             UIState.sync-forget(row.id);
                         }
@@ -310,7 +310,7 @@ export component SettingsDialog inherits PopupWindow {
                 // TextInput has no placeholder (see CommandPalette): the hint
                 // is a Text drawn only while the field is empty
                 if UIState.sync-add-text == "" : Text {
-                    text: "192.168.1.20 or 192.168.1.20:5878";
+                    text: "192.168.1.20 或 192.168.1.20:5878";
                     font-family: Typography.mono-font;
                     font-size: Typography.size-caption;
                     color: Colors.text-muted;
@@ -318,7 +318,7 @@ export component SettingsDialog inherits PopupWindow {
                     horizontal-stretch: 1;
                 }
                 Button {
-                    text: "Add by IP";
+                    text: "按 IP 添加";
                     clicked => {
                         UIState.sync-add(UIState.sync-add-text);
                     }
@@ -335,7 +335,7 @@ export component SettingsDialog inherits PopupWindow {
             Rectangle { height: 1px; background: Colors.border; }
 
             Text {
-                text: "STORAGE";
+                text: "存储";
                 font-size: Typography.size-caption;
                 font-weight: Typography.weight-semibold;
                 color: Colors.text-muted;
@@ -346,14 +346,14 @@ export component SettingsDialog inherits PopupWindow {
                     horizontal-stretch: 1;
                     spacing: 2px;
                     Text {
-                        text: "Data folder";
+                        text: "数据文件夹";
                         font-family: Typography.ui-font;
                         font-size: Typography.size-ui;
                         color: Colors.text-secondary;
                     }
                     Text {
                         text: UIState.storage-available ? UIState.data-dir
-                            : "Running in memory — no database attached";
+                            : "内存中运行 — 未挂载数据库";
                         font-family: Typography.mono-font;
                         font-size: Typography.size-caption;
                         color: UIState.storage-available ? Colors.text-primary : Colors.text-muted;
@@ -369,19 +369,19 @@ export component SettingsDialog inherits PopupWindow {
                 if UIState.storage-available : HorizontalLayout {
                     spacing: Theme.spacing-sm;
                     Button {
-                        text: "Folder";
+                        text: "打开文件夹";
                         clicked => {
                             UIState.open-data-folder();
                         }
                     }
                     Button {
-                        text: "Back up";
+                        text: "备份";
                         clicked => {
                             UIState.backup-now();
                         }
                     }
                     Button {
-                        text: "Reclaim";
+                        text: "清理";
                         clicked => {
                             UIState.reclaim-attachments();
                         }
@@ -392,7 +392,7 @@ export component SettingsDialog inherits PopupWindow {
             // notice it reports through is a toast, so the rule has to be
             // readable before the click (SPEC §三十七, ADR-0037)
             if UIState.storage-available : Text {
-                text: "Reclaim removes pictures and files that no block, undo step or the copied block points at.";
+                text: "清理会删除没有被任何块、撤销步骤或复制块引用的图片和文件。";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-muted;
@@ -402,38 +402,14 @@ export component SettingsDialog inherits PopupWindow {
             Rectangle { height: 1px; background: Colors.border; }
 
             Text {
-                text: "SHORTCUTS";
-                font-size: Typography.size-caption;
-                font-weight: Typography.weight-semibold;
-                color: Colors.text-muted;
-            }
-            VerticalLayout {
-                // single column: the two-column grid's right column used to
-                // escape the card entirely (A4 sweep D2)
-                spacing: Theme.spacing-xs;
-                ShortcutRow { keys: "Ctrl+K"; label: "Command palette"; }
-                ShortcutRow { keys: "Ctrl+P"; label: "Search pages"; }
-                ShortcutRow { keys: "Ctrl+F"; label: "Find in page"; }
-                ShortcutRow { keys: "Ctrl+N"; label: "New page"; }
-                ShortcutRow { keys: "Ctrl+\\"; label: "Toggle sidebar"; }
-                ShortcutRow { keys: "Ctrl+B / I / E / M"; label: "Bold / italic / code / formula"; }
-                ShortcutRow { keys: "Tab / Shift+Tab"; label: "Indent / outdent"; }
-                ShortcutRow { keys: "Ctrl+D"; label: "Duplicate block"; }
-                ShortcutRow { keys: "Ctrl+S"; label: "Save now"; }
-                ShortcutRow { keys: "Alt+Left / Right"; label: "Go back / forward"; }
-            }
-
-            Rectangle { height: 1px; background: Colors.border; }
-
-            Text {
-                text: "ABOUT";
+                text: "关于";
                 font-size: Typography.size-caption;
                 font-weight: Typography.weight-semibold;
                 color: Colors.text-muted;
             }
             HorizontalLayout {
                 Text {
-                    text: "Version";
+                    text: "版本";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: Colors.text-secondary;
@@ -450,7 +426,7 @@ export component SettingsDialog inherits PopupWindow {
             }
             HorizontalLayout {
                 Text {
-                    text: "Renderer";
+                    text: "渲染器";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: Colors.text-secondary;
@@ -470,7 +446,7 @@ export component SettingsDialog inherits PopupWindow {
             HorizontalLayout {
                 Rectangle { horizontal-stretch: 1; }
                 Button {
-                    text: "Done";
+                    text: "完成";
                     clicked => {
                         UIState.settings-close-requested();
                     }

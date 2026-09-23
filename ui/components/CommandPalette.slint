@@ -106,7 +106,7 @@ export component CommandPalette inherits PopupWindow {
                             font-family: Typography.ui-font;
                             font-size: Typography.size-ui-lg;
                             color: Colors.text-muted;
-                            text: "Type a command…";
+                            text: "输入命令…";
                         }
                     }
                 }
@@ -169,7 +169,7 @@ export component CommandPalette inherits PopupWindow {
                             font-size: Typography.size-caption;
                             color: Colors.text-muted;
                         }
-                        if cmd.hint != "" : Text {
+                        if cmd.hint != "" && !UIState.touch-mode : Text {
                             vertical-stretch: 0;
                             cross-axis-self-alignment: center;
                             text: cmd.hint;
@@ -190,10 +190,10 @@ export component CommandPalette inherits PopupWindow {
             }
 
             footer := Rectangle {
-                height: 26px;
-                Text {
+                height: UIState.touch-mode ? 0px : 26px;
+                if !UIState.touch-mode : Text {
                     x: Theme.spacing-md;
-                    text: "↑ ↓ navigate · Enter open · Esc dismiss";
+                    text: "↑ ↓ 选择 · Enter 打开 · Esc 关闭";
                     font-size: Typography.size-caption;
                     color: Colors.text-muted;
                     vertical-alignment: center;

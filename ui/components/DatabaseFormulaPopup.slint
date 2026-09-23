@@ -75,7 +75,7 @@ export component DatabaseFormulaPopup inherits PopupWindow {
             height: 20px;
             vertical-alignment: center;
             horizontal-alignment: right;
-            text: "Formula";
+            text: "公式";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;
@@ -141,9 +141,9 @@ export component DatabaseFormulaPopup inherits PopupWindow {
             text: UIState.db-formula-error != ""
                 ? UIState.db-formula-error
                 : (UIState.db-formula-text == ""
-                    ? "No expression - this column's cells are empty."
+                    ? "无表达式 - 此列的单元格为空。"
                     : "= " + (UIState.db-formula-preview == ""
-                        ? "empty"
+                        ? "空"
                         : UIState.db-formula-preview));
             font-family: Typography.ui-font;
             font-size: Typography.size-ui;
@@ -159,7 +159,7 @@ export component DatabaseFormulaPopup inherits PopupWindow {
             width: parent.width - 24px;
             height: 16px;
             vertical-alignment: center;
-            text: "[Column] is this row - and or not - if(c, a, b) - text() length() round() abs() min() max()";
+            text: "[Column] 是本行 - and or not - if(c, a, b) - text() length() round() abs() min() max()";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;
@@ -179,7 +179,8 @@ export component DatabaseFormulaPopup inherits PopupWindow {
             width: parent.width - 24px;
             height: 20px;
             vertical-alignment: center;
-            text: "Enter saves - Escape closes";
+            visible: !UIState.touch-mode;
+            text: "Enter 保存 - Escape 关闭";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;
@@ -197,7 +198,7 @@ export component DatabaseFormulaPopup inherits PopupWindow {
                 height: parent.height;
                 horizontal-alignment: center;
                 vertical-alignment: center;
-                text: "Save";
+                text: "保存";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-ui;
                 font-weight: Typography.weight-semibold;

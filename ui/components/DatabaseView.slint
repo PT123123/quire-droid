@@ -146,7 +146,7 @@ export component DatabaseView inherits Rectangle {
         width: root.content-width;
         height: 24px;
         vertical-alignment: center;
-        text: "(deleted database)";
+        text: "（已删除的数据库）";
         font-family: Typography.ui-font;
         font-size: Typography.size-ui;
         color: Colors.text-muted;
@@ -206,8 +206,7 @@ export component DatabaseView inherits Rectangle {
                 height: parent.height;
                 vertical-alignment: center;
                 horizontal-alignment: right;
-                text: root.block.db-row-count == 1 ? "1 row"
-                    : root.block.db-row-count + " rows";
+                text: root.block.db-row-count + " 行";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-muted;
@@ -239,7 +238,7 @@ export component DatabaseView inherits Rectangle {
                 width: parent.width - 26px;
                 height: parent.height;
                 vertical-alignment: center;
-                text: "Search this view";
+                text: "搜索此视图";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-muted;
@@ -326,7 +325,7 @@ export component DatabaseView inherits Rectangle {
                 y: 0px;
                 height: parent.height;
                 vertical-alignment: center;
-                text: "New row";
+                text: "新建行";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-secondary;
@@ -366,7 +365,7 @@ export component DatabaseView inherits Rectangle {
                 y: 0px;
                 height: parent.height;
                 vertical-alignment: center;
-                text: "Columns";
+                text: "列";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-secondary;
@@ -411,8 +410,8 @@ export component DatabaseView inherits Rectangle {
                 vertical-alignment: center;
                 horizontal-alignment: center;
                 text: root.block.db-filter-count > 0
-                    ? "Filter " + root.block.db-filter-count
-                    : "Filter";
+                    ? "筛选 " + root.block.db-filter-count
+                    : "筛选";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: root.block.db-filter-count > 0 ? Colors.accent-text : Colors.text-secondary;
@@ -450,7 +449,7 @@ export component DatabaseView inherits Rectangle {
                 height: parent.height;
                 vertical-alignment: center;
                 horizontal-alignment: center;
-                text: "Group";
+                text: "分组";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: root.block.db-group-property >= 0 ? Colors.accent-text : Colors.text-secondary;
@@ -815,7 +814,7 @@ export component DatabaseView inherits Rectangle {
                 y: 0px;
                 height: parent.height;
                 vertical-alignment: center;
-                text: "No rows yet - New row adds one";
+                text: "还没有行 - 新建行即可添加";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-muted;
@@ -1082,7 +1081,7 @@ export component DatabaseView inherits Rectangle {
                     y: 0px;
                     height: parent.height;
                     vertical-alignment: center;
-                    text: ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"][day];
+                    text: ["一", "二", "三", "四", "五", "六", "日"][day];
                     font-family: Typography.ui-font;
                     font-size: Typography.size-caption;
                     color: Colors.text-muted;
@@ -1149,9 +1148,9 @@ export component DatabaseView inherits Rectangle {
                     height: 16px;
                     vertical-alignment: center;
                     overflow: elide;
-                    text: "and "
+                    text: "还有 "
                         + (root.block.db-cal-days[week * 7 + day].count - 3)
-                        + " more";
+                        + " 条";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-caption;
                     color: Colors.accent-text;
@@ -1341,7 +1340,7 @@ export component DatabaseView inherits Rectangle {
                     y: 0px;
                     width: parent.width;
                     height: parent.height;
-                    text: "Submit";
+                    text: "提交";
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     font-family: Typography.ui-font;
@@ -1371,7 +1370,7 @@ export component DatabaseView inherits Rectangle {
                     y: 0px;
                     width: parent.width;
                     height: parent.height;
-                    text: "Clear";
+                    text: "清空";
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     font-family: Typography.ui-font;
@@ -1420,7 +1419,7 @@ export component DatabaseView inherits Rectangle {
 
         // the three shapes, right-aligned over the plot: the active one is
         // tinted, and a click writes the view's `chart` key
-        for shape[index] in ["Bar", "Line", "Pie"] : Rectangle {
+        for shape[index] in ["柱状", "折线", "饼图"] : Rectangle {
             x: plot-w - (3 - index) * 52px;
             y: 5px;
             width: 48px;
@@ -1575,7 +1574,7 @@ export component DatabaseView inherits Rectangle {
             height: parent.height - chrome-h;
             vertical-alignment: center;
             horizontal-alignment: center;
-            text: "Pick a column to group by";
+            text: "选择一个要分组的列";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;
@@ -1592,7 +1591,7 @@ export component DatabaseView inherits Rectangle {
                 y: 0px;
                 height: parent.height;
                 vertical-alignment: center;
-                text: "No rows yet - New row adds one";
+                text: "还没有行 - 新建行即可添加";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-muted;
@@ -1625,7 +1624,7 @@ export component DatabaseView inherits Rectangle {
             width: parent.width;
             height: parent.height;
             vertical-alignment: center;
-            text: "\{root.block.db-layout} view - not in this build yet";
+            text: "\{root.block.db-layout} 视图 - 此版本尚未支持";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;

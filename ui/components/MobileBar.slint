@@ -80,7 +80,7 @@ export component MobileBar inherits Rectangle {
         BarItem {
             width: parent.width / 6;
             icon-name: "arrow-left";
-            label: "Back";
+            label: "后退";
             clicked => {
                 UIState.nav-back-requested();
             }
@@ -88,7 +88,7 @@ export component MobileBar inherits Rectangle {
         BarItem {
             width: parent.width / 6;
             icon-name: "arrow-right";
-            label: "Forward";
+            label: "前进";
             clicked => {
                 UIState.nav-forward-requested();
             }
@@ -96,7 +96,7 @@ export component MobileBar inherits Rectangle {
         BarItem {
             width: parent.width / 6;
             icon-name: "panel-left";
-            label: "Pages";
+            label: "页面";
             clicked => {
                 UIState.toggle-sidebar();
             }
@@ -104,7 +104,7 @@ export component MobileBar inherits Rectangle {
         BarItem {
             width: parent.width / 6;
             icon-name: "plus";
-            label: "Add";
+            label: "添加";
             clicked => {
                 UIState.insert-at-end-requested();
             }
@@ -112,7 +112,7 @@ export component MobileBar inherits Rectangle {
         BarItem {
             width: parent.width / 6;
             icon-name: "page";
-            label: "New";
+            label: "新建";
             clicked => {
                 UIState.page-create-requested();
             }
@@ -120,7 +120,7 @@ export component MobileBar inherits Rectangle {
         BarItem {
             width: parent.width / 6;
             icon-name: "search";
-            label: "Search";
+            label: "搜索";
             clicked => {
                 UIState.search-open-requested();
             }

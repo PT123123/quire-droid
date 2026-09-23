@@ -278,7 +278,7 @@ export component Editor inherits Rectangle {
                 }
                 if UIState.find-term == "" : Text {
                     x: 6px;
-                    text: "Find";
+                    text: "查找";
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
                     color: Colors.text-muted;
@@ -356,7 +356,7 @@ export component Editor inherits Rectangle {
             // hole where the button's name should be. `…` (U+2026) is in the
             // face, and is the same word the palette and search placeholders
             // already use.
-            text: "Page locked · … to unlock";
+            text: "页面已锁定 · … 解锁";
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-secondary;
@@ -438,7 +438,7 @@ export component Editor inherits Rectangle {
                 cross-axis-self-alignment: center;
             }
             Text {
-                text: "This page is empty";
+                text: "此页面为空";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-h3;
                 font-weight: Typography.weight-semibold;
@@ -446,14 +446,14 @@ export component Editor inherits Rectangle {
                 horizontal-alignment: center;
             }
             Text {
-                text: "Click here to write, or press Enter in the title above.";
+                text: "点击这里开始写作，或在上方标题中按 Enter。";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-ui;
                 color: Colors.text-muted;
                 horizontal-alignment: center;
             }
             if UIState.workspace-empty : Button {
-                text: "Create your first page";
+                text: "创建你的第一个页面";
                 primary: true;
                 clicked => {
                     UIState.page-create-requested();

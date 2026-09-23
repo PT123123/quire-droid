@@ -43,9 +43,9 @@ export component DatabaseRollupPopup inherits PopupWindow {
     // and both read as a bug without a sentence under them.
     property <string> note: UIState.db-rollup-panel == 1
             && UIState.db-rollup-rows.length == 0
-        ? "This database has no relation column to fold through."
+        ? "此数据库没有可用于汇总的关系列。"
         : UIState.db-rollup-panel == 2 && UIState.db-rollup-rows.length == 1
-            ? "That relation has no target database yet - link it from its own cell."
+            ? "该关系还没有目标数据库 - 请从其自身单元格链接。"
             : "";
 
     // The sentence's three names, in the order the chooser panels open them.
@@ -93,10 +93,10 @@ export component DatabaseRollupPopup inherits PopupWindow {
             vertical-alignment: center;
             horizontal-alignment: right;
             text: UIState.db-rollup-panel == 0
-                ? "Rollup"
-                : (UIState.db-rollup-panel == 1 ? "Rollup - relation"
-                    : (UIState.db-rollup-panel == 2 ? "Rollup - column"
-                        : "Rollup - fold"));
+                ? "汇总"
+                : (UIState.db-rollup-panel == 1 ? "汇总 - 关系"
+                    : (UIState.db-rollup-panel == 2 ? "汇总 - 列"
+                        : "汇总 - 折叠"));
             font-family: Typography.ui-font;
             font-size: Typography.size-caption;
             color: Colors.text-muted;
@@ -122,7 +122,7 @@ export component DatabaseRollupPopup inherits PopupWindow {
                     width: 64px;
                     height: parent.height;
                     vertical-alignment: center;
-                    text: index == 0 ? "Relation" : (index == 1 ? "Column" : "Fold");
+                    text: index == 0 ? "关系" : (index == 1 ? "列" : "折叠");
                     font-family: Typography.ui-font;
                     font-size: Typography.size-caption;
                     color: Colors.text-muted;
@@ -138,7 +138,7 @@ export component DatabaseRollupPopup inherits PopupWindow {
                     text: value;
                     font-family: Typography.ui-font;
                     font-size: Typography.size-ui;
-                    color: value == "Not set" ? Colors.text-muted : Colors.text-primary;
+                    color: value == "未设置" ? Colors.text-muted : Colors.text-primary;
                 }
                 part-ta := TouchArea {
                     width: parent.width;
@@ -157,7 +157,7 @@ export component DatabaseRollupPopup inherits PopupWindow {
                 height: 16px;
                 vertical-alignment: center;
                 overflow: elide;
-                text: "Count folds the related rows - the rest fold one column of them";
+                text: "计数汇总相关行 - 其余则汇总其某一列";
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: Colors.text-muted;
@@ -179,10 +179,10 @@ export component DatabaseRollupPopup inherits PopupWindow {
                 height: 18px;
                 vertical-alignment: center;
                 text: UIState.db-rollup-panel == 1
-                    ? "Fold through which relation?"
+                    ? "汇总经由哪个关系？"
                     : (UIState.db-rollup-panel == 2
-                        ? "‹ Which column of the related rows?"
-                        : "‹ Fold them how?");
+                        ? "‹ 相关行的哪一列？"
+                        : "‹ 如何汇总？");
                 font-family: Typography.ui-font;
                 font-size: Typography.size-caption;
                 color: UIState.db-rollup-panel == 1 ? Colors.text-muted
