@@ -12,10 +12,7 @@
 
 pub mod app;
 pub mod platform;
-// LAN sync between installs (desktop ↔ Android): discovery, pairing and the
-// three-way merge. The shell owns the engine; `quire-core`'s store supplies
-// the data through the same Repository seam as everything else.
-pub mod sync;
+
 
 // The Android entry (M9.pre). It is the crate's `main` on that platform — the
 // desktop `main` in src/main.rs and this one are the only two entry points, and

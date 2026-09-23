@@ -40,7 +40,7 @@ crate-type = ["rlib", "cdylib"]
 # branch and no releases yet; the SHA is what makes a build reproducible.
 # Over HTTPS on purpose: the repository is public, and this is the URL that works
 # on a machine that has no SSH key registered — pushing uses SSH.
-quire-core = { git = "https://github.com/PT123123/quire-core.git", rev = "f3044e22ee597307fe6bb031662b65ac1856a030" }
+quire-core = { git = "https://github.com/PT123123/quire-core.git", rev = "2cfae83b27cc3d1be2ac7d4ddfb76becf78c1212" }
 # These two used to sit in `[workspace.dependencies]`, "so the shell and the
 # store agree". They never did: `quire-core` is a *git dependency*, not a member,
 # and workspace inheritance does not reach across a repository boundary. What

@@ -371,7 +371,7 @@ export struct CommandRow {
     icon: string,
 }
 
-// One line of the settings dialog's LAN-sync section (crate::sync). Rust
+// One line of the settings dialog's LAN-sync section (crate::services::sync). Rust
 // builds these from the peers table; the delegate only draws them.
 export struct SyncRow {
     id: string,
@@ -507,7 +507,7 @@ export global UIState {
     // LAN sharing (read-only server on :5877); persisted, restart applies
     in-out property <bool> lan-sharing: false;
     callback toggle-lan-sharing();
-    // LAN sync (crate::sync): the paired/discovered devices, the last line the
+    // LAN sync (crate::services::sync): the paired/discovered devices, the last line the
     // engine said, and the switch that lets the periodic round run by itself.
     // The rows are Rust-built from the peers table (settings row "sync.peers").
     in-out property <[SyncRow]> sync-rows;

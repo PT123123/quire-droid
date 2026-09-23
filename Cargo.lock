@@ -3970,10 +3970,12 @@ dependencies = [
 [[package]]
 name = "quire-core"
 version = "0.1.0"
-source = "git+https://github.com/PT123123/quire-core.git?rev=f3044e22ee597307fe6bb031662b65ac1856a030#f3044e22ee597307fe6bb031662b65ac1856a030"
+source = "git+https://github.com/PT123123/quire-core.git?rev=2cfae83b27cc3d1be2ac7d4ddfb76becf78c1212#2cfae83b27cc3d1be2ac7d4ddfb76becf78c1212"
 dependencies = [
  "image",
  "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

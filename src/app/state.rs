@@ -11685,7 +11685,7 @@ impl AppState {
     }
 
     /// This device's identity, minted once and remembered.
-    pub fn sync_self_info(&self) -> crate::sync::engine::DeviceInfo {
+    pub fn sync_self_info(&self) -> crate::services::sync::engine::DeviceInfo {
         let mut id = self.sync_setting("sync.device-id").unwrap_or_default();
         if id.is_empty() {
             // No uuid crate: the wall clock and this session's own address
@@ -11696,36 +11696,36 @@ impl AppState {
                 .unwrap_or(0);
             id = format!(
                 "{}-{:x}",
-                crate::sync::engine::DeviceInfo::kind(),
+                crate::services::sync::engine::DeviceInfo::kind(),
                 nanos ^ (self as *const AppState as u64)
             );
             self.record_setting("sync.device-id", &id);
         }
         let mut name = self.sync_setting("sync.device-name").unwrap_or_default();
         if name.is_empty() {
-            name = crate::sync::engine::DeviceInfo::default_name(&id);
+            name = crate::services::sync::engine::DeviceInfo::default_name(&id);
             self.record_setting("sync.device-name", &name);
         }
-        crate::sync::engine::DeviceInfo {
+        crate::services::sync::engine::DeviceInfo {
             id,
             name,
-            kind: crate::sync::engine::DeviceInfo::kind(),
-            port: crate::sync::SYNC_PORT,
+            kind: crate::services::sync::engine::DeviceInfo::kind(),
+            port: crate::services::sync::SYNC_PORT,
         }
     }
 
-    pub fn sync_peers(&self) -> Vec<crate::sync::engine::PeerRecord> {
+    pub fn sync_peers(&self) -> Vec<crate::services::sync::engine::PeerRecord> {
         self.sync_setting("sync.peers")
             .and_then(|v| serde_json::from_str(&v).ok())
             .unwrap_or_default()
     }
 
-    pub fn sync_set_peers(&self, peers: &[crate::sync::engine::PeerRecord]) {
+    pub fn sync_set_peers(&self, peers: &[crate::services::sync::engine::PeerRecord]) {
         let json = serde_json::to_string(peers).unwrap_or_else(|_| "[]".into());
         self.record_setting("sync.peers", &json);
     }
 
-    pub fn sync_upsert_peer(&self, rec: crate::sync::engine::PeerRecord) {
+    pub fn sync_upsert_peer(&self, rec: crate::services::sync::engine::PeerRecord) {
         let mut peers = self.sync_peers();
         match peers.iter_mut().find(|p| p.id == rec.id) {
             Some(slot) => *slot = rec,
@@ -11749,7 +11749,7 @@ impl AppState {
         if id.is_empty() {
             return;
         }
-        let now = crate::sync::engine::now_unix();
+        let now = crate::services::sync::engine::now_unix();
         let mut peers = self.sync_peers();
         match peers.iter_mut().find(|p| p.id == id) {
             Some(p) => {
@@ -11770,7 +11770,7 @@ impl AppState {
                     p.paired = v;
                 }
             }
-            None => peers.push(crate::sync::engine::PeerRecord {
+            None => peers.push(crate::services::sync::engine::PeerRecord {
                 id: id.to_string(),
                 name: name.to_string(),
                 kind: kind.to_string(),
@@ -11788,18 +11788,18 @@ impl AppState {
     /// only on success.
     pub fn sync_note_synced(&self, peer_id: &str, ok: bool) {
         let mut peers = self.sync_peers();
-        let now = crate::sync::engine::now_unix();
+        let now = crate::services::sync::engine::now_unix();
         if let Some(p) = peers.iter_mut().find(|p| p.id == peer_id) {
             p.last_seen = now;
             if ok {
-                p.last_sync = crate::sync::engine::now_rfc3339();
+                p.last_sync = crate::services::sync::engine::now_rfc3339();
             }
         }
         self.sync_set_peers(&peers);
     }
 
     pub fn sync_forget_peer(&self, peer_id: &str) {
-        let peers: Vec<crate::sync::engine::PeerRecord> = self
+        let peers: Vec<crate::services::sync::engine::PeerRecord> = self
             .sync_peers()
             .into_iter()
             .filter(|p| p.id != peer_id)
@@ -11811,7 +11811,7 @@ impl AppState {
         );
     }
 
-    pub fn sync_log(&self) -> Vec<crate::sync::engine::LogLine> {
+    pub fn sync_log(&self) -> Vec<crate::services::sync::engine::LogLine> {
         self.sync_setting("sync.log")
             .and_then(|v| serde_json::from_str(&v).ok())
             .unwrap_or_default()
@@ -11819,8 +11819,8 @@ impl AppState {
 
     pub fn sync_log_push(&self, peer: &str, ok: bool, message: &str) {
         let mut log = self.sync_log();
-        log.push(crate::sync::engine::LogLine {
-            at: crate::sync::engine::now_rfc3339(),
+        log.push(crate::services::sync::engine::LogLine {
+            at: crate::services::sync::engine::now_rfc3339(),
             peer: peer.to_string(),
             ok,
             message: message.to_string(),
@@ -11849,12 +11849,12 @@ impl AppState {
         self.record_setting("sync.auto", if on { "1" } else { "0" });
     }
 
-    fn sync_shadow(&self, peer_id: &str) -> Option<crate::sync::model::SyncSnapshot> {
+    fn sync_shadow(&self, peer_id: &str) -> Option<crate::services::sync::model::SyncSnapshot> {
         self.sync_setting(&format!("sync.shadow.{peer_id}"))
-            .and_then(|v| crate::sync::model::SyncSnapshot::from_json(&v).ok())
+            .and_then(|v| crate::services::sync::model::SyncSnapshot::from_json(&v).ok())
     }
 
-    fn sync_store_shadow(&self, peer_id: &str, snap: &crate::sync::model::SyncSnapshot) {
+    fn sync_store_shadow(&self, peer_id: &str, snap: &crate::services::sync::model::SyncSnapshot) {
         self.record_setting(
             &format!("sync.shadow.{peer_id}"),
             &snap.to_json(),
@@ -11867,8 +11867,8 @@ impl AppState {
     /// (with their marks) from the document, attachment rows from the map,
     /// and the database layer's schema from the in-memory catalog plus its
     /// records and cell values read straight out of the store.
-    pub fn sync_export(&self) -> crate::sync::model::SyncSnapshot {
-        use crate::sync::model::{SAttachment, SBlock, SPage, SValue, SyncSnapshot};
+    pub fn sync_export(&self) -> crate::services::sync::model::SyncSnapshot {
+        use crate::services::sync::model::{SAttachment, SBlock, SPage, SValue, SyncSnapshot};
         let mut snap = SyncSnapshot::default();
         let me = self.sync_self_info();
         snap.device_id = me.id;
@@ -11910,27 +11910,25 @@ impl AppState {
         }
 
         let catalog = self.databases.borrow().clone();
-        snap.databases = crate::sync::model::catalog_schema(&catalog);
+        snap.databases = crate::services::sync::model::catalog_schema(&catalog);
         if let Some(repo) = &self.repo {
             for row in &mut snap.databases {
                 let db_id = crate::core::database::DatabaseId(row.id);
-                let list = match repo.records_named(db_id, "", usize::MAX) {
+                // the whole table in one read (`records_of`), not a needle
+                // search plus a point read per row
+                let recs = match repo.records_of(db_id) {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                let ids: Vec<crate::core::database::RecordId> = list
-                    .iter()
-                    .map(|(id, _)| crate::core::database::RecordId(*id))
-                    .collect();
-                for rid in &ids {
-                    if let Ok(Some(rec)) = repo.record(*rid) {
-                        row.records.push(crate::sync::model::SRecord {
-                            id: rec.id.0,
-                            db: rec.db.0,
-                            page: rec.page.map(|p| p.0),
-                            ord: rec.ord.0,
-                        });
-                    }
+                let ids: Vec<crate::core::database::RecordId> =
+                    recs.iter().map(|r| r.id).collect();
+                for rec in &recs {
+                    row.records.push(crate::services::sync::model::SRecord {
+                        id: rec.id.0,
+                        db: rec.db.0,
+                        page: rec.page.map(|p| p.0),
+                        ord: rec.ord.0,
+                    });
                 }
                 for prop in &row.properties {
                     let kind = crate::core::database::PropertyKind::try_from_str(&prop.kind);
@@ -11961,10 +11959,10 @@ impl AppState {
     /// caller pushes it back to the peer and stores it as this peer's shadow.
     pub fn sync_apply_remote(
         &self,
-        remote: &crate::sync::model::SyncSnapshot,
+        remote: &crate::services::sync::model::SyncSnapshot,
         bytes: &[(u64, Vec<u8>)],
-        peer: &crate::sync::engine::PeerRecord,
-    ) -> Result<crate::sync::model::SyncSnapshot, String> {
+        peer: &crate::services::sync::engine::PeerRecord,
+    ) -> Result<crate::services::sync::model::SyncSnapshot, String> {
         let local = self.sync_export();
         let shadow = self.sync_shadow(&peer.id);
         let peer_name = if remote.device.is_empty() {
@@ -12009,7 +12007,7 @@ impl AppState {
             view_cell.set(v + 1);
             v
         };
-        let mut ctx = crate::sync::merge::MergeCtx {
+        let mut ctx = crate::services::sync::merge::MergeCtx {
             next_page: &mut next_page,
             next_block: &mut next_block,
             next_attachment: &mut next_att,
@@ -12018,7 +12016,7 @@ impl AppState {
             next_record: &mut next_rec,
             next_view: &mut next_view,
         };
-        let outcome = crate::sync::merge::merge(&local, shadow.as_ref(), remote, &peer_name, &mut ctx);
+        let outcome = crate::services::sync::merge::merge(&local, shadow.as_ref(), remote, &peer_name, &mut ctx);
         let conflicts = outcome.conflicts.clone();
         let att_remap = outcome.attachment_remap.clone();
         let merged = outcome.merged;
@@ -12166,14 +12164,14 @@ impl AppState {
                 continue;
             }
             let mut batch: Vec<Change> = Vec::new();
-            let local_rows: std::collections::HashMap<u64, crate::sync::model::SBlock> = {
+            let local_rows: std::collections::HashMap<u64, crate::services::sync::model::SBlock> = {
                 let doc = self.doc.borrow();
                 doc.page_blocks(pid)
                     .iter()
-                    .map(|b| (b.id.0, crate::sync::model::SBlock::from(b)))
+                    .map(|b| (b.id.0, crate::services::sync::model::SBlock::from(b)))
                     .collect()
             };
-            let merged_here: Vec<&crate::sync::model::SBlock> = merged
+            let merged_here: Vec<&crate::services::sync::model::SBlock> = merged
                 .blocks
                 .iter()
                 .filter(|b| b.page == page.id)
@@ -12345,7 +12343,7 @@ impl AppState {
                 .iter()
                 .flat_map(|d| d.records.iter().map(|r| r.id))
                 .collect();
-            let local_values: std::collections::HashMap<(u64, u64), &crate::sync::model::SValue> =
+            let local_values: std::collections::HashMap<(u64, u64), &crate::services::sync::model::SValue> =
                 local
                     .databases
                     .iter()
@@ -12405,7 +12403,7 @@ impl AppState {
             }
             // a record the merged snapshot dropped over an unchanged local
             // copy is deleted remotely; the merge's delete list said so
-            let local_record_rows: Vec<&crate::sync::model::SRecord> = local
+            let local_record_rows: Vec<&crate::services::sync::model::SRecord> = local
                 .databases
                 .iter()
                 .flat_map(|d| d.records.iter())
@@ -12444,8 +12442,8 @@ impl AppState {
 /// Change, and the caller applies the batch to both the document and the
 /// store in one transaction.
 fn sync_block_diff(
-    lb: &crate::sync::model::SBlock,
-    mb: &crate::sync::model::SBlock,
+    lb: &crate::services::sync::model::SBlock,
+    mb: &crate::services::sync::model::SBlock,
     batch: &mut Vec<Change>,
 ) {
     use crate::core::types::BlockId;
@@ -14299,13 +14297,13 @@ mod tests {
     }
 
     /// A peer row for the sync tests: the two peers are the two sessions.
-    fn peer(id: &str, name: &str) -> crate::sync::engine::PeerRecord {
-        crate::sync::engine::PeerRecord {
+    fn peer(id: &str, name: &str) -> crate::services::sync::engine::PeerRecord {
+        crate::services::sync::engine::PeerRecord {
             id: id.into(),
             name: name.into(),
             kind: "windows".into(),
             ip: "127.0.0.1".into(),
-            port: crate::sync::SYNC_PORT,
+            port: crate::services::sync::SYNC_PORT,
             paired: true,
             last_seen: 0,
             last_sync: String::new(),

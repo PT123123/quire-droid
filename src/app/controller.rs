@@ -67,7 +67,7 @@ fn ask(g: &UIState<'_>, picker: crate::platform::picker::Picker) -> Option<std::
 
 // ─── LAN sync (crate::sync) ─────────────────────────────────────────────────
 //
-// The engine (`crate::sync::engine`) owns the sockets and the worker thread;
+// The engine (`crate::services::sync::engine`) owns the sockets and the worker thread;
 // this is its UI half: the pump that answers its jobs on this thread (the
 // session is `Rc`, so nothing else may touch it), the settings dialog's rows,
 // and the five callbacks that dialog fires.
@@ -75,8 +75,8 @@ fn ask(g: &UIState<'_>, picker: crate::platform::picker::Picker) -> Option<std::
 /// Start the engine and the pump. Called once from `wire`.
 fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
     let me = state.sync_self_info();
-    let (job_tx, job_rx) = std::sync::mpsc::channel::<crate::sync::engine::Job>();
-    let cmd_tx = crate::sync::engine::Engine::start(me, job_tx);
+    let (job_tx, job_rx) = std::sync::mpsc::channel::<crate::services::sync::engine::Job>();
+    let cmd_tx = crate::services::sync::engine::Engine::start(me, job_tx);
 
     // the dialog's own switch and rows, pushed once at wire time
     {
@@ -93,7 +93,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
             let g = gw.upgrade().unwrap();
             if let Some(peer) = s.sync_peers().into_iter().find(|p| p.id == id.as_str()) {
                 g.set_sync_status(format!("Syncing with {}…", peer.name).into());
-                let _ = cmd.send(crate::sync::engine::Cmd::SyncWith(peer));
+                let _ = cmd.send(crate::services::sync::engine::Cmd::SyncWith(peer));
             }
         });
     }
@@ -105,7 +105,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
             let g = gw.upgrade().unwrap();
             if let Some(peer) = s.sync_peers().into_iter().find(|p| p.id == id.as_str()) {
                 g.set_sync_status(format!("Asking {} to pair…", peer.name).into());
-                let _ = cmd.send(crate::sync::engine::Cmd::PairWith(peer));
+                let _ = cmd.send(crate::services::sync::engine::Cmd::PairWith(peer));
             }
         });
     }
@@ -147,12 +147,12 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
             let (ip, port) = match text.rsplit_once(':') {
                 Some((host, p)) => match p.parse::<u16>() {
                     Ok(port) => (host.to_string(), port),
-                    Err(_) => (text.clone(), crate::sync::SYNC_PORT),
+                    Err(_) => (text.clone(), crate::services::sync::SYNC_PORT),
                 },
-                None => (text.clone(), crate::sync::SYNC_PORT),
+                None => (text.clone(), crate::services::sync::SYNC_PORT),
             };
             g.set_sync_status(format!("Looking for a Quire at {ip}:{port}…").into());
-            let _ = cmd.send(crate::sync::engine::Cmd::ProbeAdd { ip, port });
+            let _ = cmd.send(crate::services::sync::engine::Cmd::ProbeAdd { ip, port });
         });
     }
 
@@ -183,7 +183,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
             if auto && last_auto.get().elapsed().as_secs() >= interval {
                 last_auto.set(std::time::Instant::now());
                 for peer in s.sync_peers().into_iter().filter(|p| p.paired) {
-                    let _ = cmd.send(crate::sync::engine::Cmd::SyncWith(peer));
+                    let _ = cmd.send(crate::services::sync::engine::Cmd::SyncWith(peer));
                 }
             }
         },
@@ -191,8 +191,8 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
 }
 
 /// One engine job, answered on the UI thread.
-fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::sync::engine::Job) {
-    use crate::sync::engine::Job;
+fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::services::sync::engine::Job) {
+    use crate::services::sync::engine::Job;
     match job {
         Job::ExportSnapshot { reply } => {
             let _ = reply.send(state.sync_export());
@@ -323,7 +323,7 @@ fn handle_sync_job(g: &UIState<'_>, state: &Rc<AppState>, job: crate::sync::engi
 
 /// The dialog's rows, rebuilt from the peers table and the log.
 fn refresh_sync_ui(g: &UIState<'_>, state: &AppState) {
-    let now = crate::sync::engine::now_unix();
+    let now = crate::services::sync::engine::now_unix();
     let rows: Vec<crate::SyncRow> = state
         .sync_peers()
         .into_iter()

@@ -518,15 +518,19 @@ First functional release: a local, single-file-database notes workspace.
   desktop's "+" handle opens, anchored above the bar. The dark-mode and bar
   changes ride the same `UIState` callbacks the keyboard chords use
 
-### LAN sync (crate::sync)
+### LAN sync (quire-core's `services::sync`)
 - Two Quire installs on one network keep each other's workspace by exchanging
   whole snapshots and merging them three ways (aw-server-plus's model, adapted
-  to Quire's integer ids and its change lists). The engine is
-  `src/sync/`: UDP discovery on 46000, a dependency-free HTTP server on 5878
-  (`/sync/info`, `/sync/snapshot` GET and POST, `/sync/attachment/<id>`,
-  `/sync/pair`), a worker thread that runs one pull-merge-push cycle at a time,
-  and a Slint `Timer` on the UI thread that answers every job that has to touch
-  the session — the workspace is `Rc`-bound to that thread, so nothing else may
+  to Quire's integer ids and its change lists). The protocol lives in
+  `quire-core`, so both shells depend on one implementation instead of
+  carrying a copy each: UDP discovery on 46000, a dependency-free HTTP server
+  on 5878 (`/sync/info`, `/sync/snapshot` GET and POST,
+  `/sync/attachment/<id>`, `/sync/pair`), a worker thread that runs one
+  pull-merge-push cycle at a time, and a Slint `Timer` on the UI thread that
+  answers every job that has to touch the session — the workspace is `Rc`-bound
+  to that thread, so nothing else may. What stays in each shell is the session
+  glue (building a snapshot out of the live workspace and walking a merged one
+  back in) and that pump
 - The merge is against a **shadow** (what the two devices last agreed on, one
   settings row per peer): a row only the other side moved is taken, a row only
   this side moved is kept, a row both sides edited keeps this device's copy and
