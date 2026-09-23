@@ -14,11 +14,13 @@ import { UIState } from "../Types.slint";
 
 export component ContextMenu inherits PopupWindow {
     width: 184px;
+    // touch rows at the 44 dp minimum; desktop keeps 30 px (see BlockMenuPopup)
+    property <length> row-h: UIState.touch-mode ? 44px : 30px;
     // natural height, clamped to the window space below the anchor so a
     // tall Move-to list scrolls inside the popup instead of running off
     // the window bottom (A4 sweep D3)
     height: min(
-        UIState.menu-rows.length * 30px + 8px,
+        UIState.menu-rows.length * row-h + 8px,
         max(UIState.window-h - UIState.menu-y - 20px, 120px),
     );
     close-policy: PopupClosePolicy.close-on-click-outside;
@@ -51,7 +53,7 @@ export component ContextMenu inherits PopupWindow {
 
             for item in UIState.menu-rows : Rectangle {
                 width: parent.content-width;
-                height: 30px;
+                height: row-h;
                 border-radius: Theme.radius-sm;
                 background: row-ta.has-hover ? Colors.surface-hover : transparent;
                 animate background { duration: Theme.duration-instant; }

@@ -3496,3 +3496,54 @@ r1 那 18 行是换 settle 之前的旧词汇，留着不改，`exit_code` 词�
 `benchmarks/scripts/audit_results.ps1` 复跑绿（12 first-paint + 28 bench）。诊断脚本留在 `.scratch/`
 （`diag_size2.ps1`、`diag_final.ps1`、`idle_out.txt`、`leak_out.txt`、`step_out.txt`、`density_out.txt`、
 `probes_out.txt`），它们是上面每条断言的证据路径，不进清单。
+
+## M9.a · 触屏可及的编辑器 chrome — 长按就是 ⋮⋮，菜单行站上 44 dp（2026-09-23，on `master`，ADR-0097）
+
+M9.pre 交付的是「编译、链接、真机能启动」；这一刀还的是它自己记账的那笔债
+（`docs/ANDROID_NOTES.md` "What must be rebuilt" 的悬置句）：**手指没有 hover**，
+`BlockHandle` 的 `visible-flag: ta.has-hover || …` 在手机上永远到不了可见态，
+⋮⋮ 菜单和「+」插入菜单在手机上没有任何可达路径——MobileBar 只躲开了导航那一半，
+编辑器自己的 chrome 没躲开。
+
+**改动面**：`ui/components/EditorBlock.slint`（行 TouchArea 的 `pointer-event` +
+每个 delegate 一个一次性 `Timer` + 长按吞 click 旗标）；`ui/AppWindow.slint`
+（`BlockMenuPopup` 28→44 px、`SlashMenuPopup` 32→44 px，行高收敛为一个
+`row-h` 属性）；`ui/components/ContextMenu.slint`（30→44 px）；`src/app/state.rs`
+（`fill_block_menu(id, touch)` + `INSERT_BELOW_ACTION = 15`）；`src/app/controller.rs`
+（五个行高乘数点读 `touch-mode`、action 15 分发、`touch-menu` 场景、三个场景调用点传
+`false`）；`benchmarks/scripts/sweep.ps1`（场景表 +1）。
+
+**三个决定**：
+
+1. **长按走的是 ⋮⋮ 的旧门，不是新机制**。同一个 `block-menu-opened(id, y, x)`
+   回调、同一个控制器锚点换算与 clamp——手机与桌面共享整条弹出路径，只有「怎么唤起它」
+   是新的。滚动误开由三道闸挡：位移 >12 px 停表、被 Flickable 抢走的 press 以
+   `PointerEventKind.cancel` 到达也停表、`triggered` 时再把 `editor-scroll-y` 与
+   按下时对一次（前两道都失效时的兜底）。长按开过菜单后，抬指产生的 click 被旗标吞掉。
+   Slint 1.18 的 `Timer` 默认 `running: true`——不显式写 `running: false`，
+   每个被 realize 的行都会在建立 500 ms 后醒来一次，一万行的页面就是一万次。
+2. **行高只有一个权威，锚点必须同乘**。`reanchor_page_menu` 的注释里记着这条缝上一次
+   咬人（Rust 说 28+16、popup 画 30 px 行）的形状；touch 旗标把缝的面积翻倍，所以
+   五个乘数点（block menu 开启、reanchor、`open_slash_at`、`on_block_plus`、
+   `reanchor_page_menu`）全部改成读同一个 `touch-mode` 的同一个数，popup 侧则把字面量
+   收进 `row-h` 属性——两边只剩「同一个 if」的距离。
+3. **「+」的一半由菜单里的一行承担**。触屏菜单多一行 **Insert below**
+   （仅 touch、仅非锁页——锁页 retain 只留 9/4 两行，新行自动被它摘掉），
+   执行与桌面 `on_block_plus` 同形的 `InsertBlockAfter` + `open_slash_insert("")`，
+   锚在菜单自己刚在的位置（行的几何已随报它的 delegate 走掉）。测试
+   `the_touch_menu_offers_insert_below_and_the_desktop_menu_does_not`
+   钉三面：桌面菜单没有这行、触屏恰有一行、锁页把它摘掉——并做了变异检查
+   （把条件改成恒真，测试红，回滚）。
+
+**验证**：`cargo check --all-targets` 干净零警告；`cargo test --all-targets`
+（跳过环境剪贴板那条）**134 passed / 0 failed / 10 ignored**，本 slice 新增 1 条。
+像素走 control-build 流程：`dc2399f` 在干净 worktree 编出对照 `quire-shot`，
+两树各扫一遍——**131 张共享场景逐字节相同，唯一新文件是 `touch-menu.png`**
+（44 px 行、Insert below 行、thumb bar、无侧栏的整机形状），桌面基线零漂移。
+
+**未验证**：①长按手势本身——headless 没有按下并保持的输入，它和 IME 尖峰（M9.0）
+是真机欠的两件事；②拖拽重排在手机上仍然只有菜单里的 Move up/down（DragArea 在
+不可见把手上）；③数据库 popup、Settings 行、文件块 26 px 按钮仍是桌面尺寸
+（163 条字面量清单的其余部分），属下一刀；④锚定在 y=300 的场景里 492 px 高的菜单
+盖过了 thumb bar——真机长按锚在被按的行上，控制器 clamp 到窗口底，但「菜单与
+thumb bar 重叠」这个状态没有专门处理，观感留给真机判。

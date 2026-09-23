@@ -3080,14 +3080,16 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
         ui.global::<UIState>()
             .on_block_menu_opened(move |id, handle_y, content_x| {
                 let g = gw.upgrade().unwrap();
-                s.fill_block_menu(id);
+                s.fill_block_menu(id, g.get_touch_mode());
                 // anchor beside the handle: window y = top bar + list-layout
                 // y (pre-scroll) - scroll; x aligns with the text column.
                 // The height follows the row count so the tall root menu
-                // (and its submenus) never anchor below the window.
+                // (and its submenus) never anchor below the window. The row
+                // height is the popup's own (touch rows stand at 44 dp).
+                let row_h = if g.get_touch_mode() { 44.0 } else { 28.0 };
                 let scroll = g.get_editor_scroll_y();
                 let edge = content_edge_offset(&g);
-                let menu_h = g.get_block_menu_rows().row_count() as f32 * 28.0 + 16.0;
+                let menu_h = g.get_block_menu_rows().row_count() as f32 * row_h + 16.0;
                 let y = (40.0 + handle_y as f32 - scroll + 2.0)
                     .clamp(48.0, (g.get_window_h() - menu_h).max(48.0));
                 g.set_block_menu_x(edge + content_x as f32 + 2.0);
@@ -3116,7 +3118,8 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
             // D3 fix) — the block menu was the one that was missed, and it is
             // the one the Known-limitations entry was reporting.
             let reanchor = || {
-                let menu_h = g.get_block_menu_rows().row_count() as f32 * 28.0 + 16.0;
+                let row_h = if g.get_touch_mode() { 44.0 } else { 28.0 };
+                let menu_h = g.get_block_menu_rows().row_count() as f32 * row_h + 16.0;
                 let y = g
                     .get_block_menu_y()
                     .clamp(48.0, (g.get_window_h() - menu_h - 8.0).max(48.0));
@@ -3128,7 +3131,7 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 return;
             }
             if action == 8 {
-                s.fill_block_menu(id);
+                s.fill_block_menu(id, g.get_touch_mode());
                 reanchor();
                 return;
             }
@@ -3232,6 +3235,36 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 4 => s.copy_block(id),
                 5 => {
                     s.paste_below(id);
+                }
+                // Touch-only (the row exists only there): the desktop "+" is a
+                // handle on the row, the phone's is this row in the long-press
+                // menu. Same shape as `on_block_plus` — one empty paragraph,
+                // caret in it, the insert menu on top — anchored where the
+                // menu just was, because the row geometry left with the
+                // delegate that reported it.
+                15 => {
+                    let changes = s.exec_on_open_page(Command::InsertBlockAfter {
+                        id: BlockId(id as u64),
+                        kind: crate::core::BlockKind::Paragraph,
+                        text: String::new(),
+                    });
+                    if let Some(nid) = changes.as_deref().and_then(find_inserted_id) {
+                        focus_block(&g, &s, nid, 0);
+                        s.open_slash_insert("");
+                        let row_h = if g.get_touch_mode() { 44.0 } else { 32.0 };
+                        let count = g.get_slash_items().row_count() as f32;
+                        let menu_h = count * row_h + 8.0;
+                        let bm_row_h = if g.get_touch_mode() { 44.0 } else { 28.0 };
+                        let bm_h = g.get_block_menu_rows().row_count() as f32 * bm_row_h + 16.0;
+                        let y = (g.get_block_menu_y() + bm_h + 4.0)
+                            .clamp(48.0, (g.get_window_h() - menu_h - 8.0).max(48.0));
+                        g.set_slash_x(g.get_block_menu_x());
+                        g.set_slash_y(y);
+                        g.set_slash_filter("".into());
+                        g.set_slash_focus(0);
+                        g.set_slash_insert(true);
+                        g.set_slash_open(true);
+                    }
                 }
                 6 => {
                     // deleting a Page block takes its child page with it; a
@@ -3354,8 +3387,9 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 // Picking a row types the block; clicking away (or Escape)
                 // keeps the empty paragraph, exactly like Notion.
                 s.open_slash_insert("");
+                let row_h = if g.get_touch_mode() { 44.0 } else { 32.0 };
                 let count = g.get_slash_items().row_count() as f32;
-                let menu_h = count * 32.0 + 8.0;
+                let menu_h = count * row_h + 8.0;
                 let scroll = g.get_editor_scroll_y();
                 let edge = content_edge_offset(&g);
                 let y = (40.0 + row_bottom as f32 - scroll + 4.0)
@@ -4134,7 +4168,8 @@ fn flush_pending_edit(g: &UIState<'_>, state: &Rc<AppState>) {
 /// off the bottom once before (ADR-0032's fix), and the mention picker's row
 /// count changes with every keystroke of its filter.
 fn open_slash_at(g: &UIState<'_>, row_y: f32, row_h: f32, content_x: f32) {
-    let menu_h = g.get_slash_items().row_count() as f32 * 32.0 + 8.0;
+    let item_h = if g.get_touch_mode() { 44.0 } else { 32.0 };
+    let menu_h = g.get_slash_items().row_count() as f32 * item_h + 8.0;
     let scroll = g.get_editor_scroll_y();
     let edge = content_edge_offset(&g);
     let y = (40.0 + row_y - scroll + row_h + 4.0)
@@ -4425,8 +4460,10 @@ fn reanchor_page_menu(g: &UIState<'_>) {
     // against; this used to say 28 + 16, which under-estimates by
     // `2 * rows - 8` — 40 px on a 24-row Move-to list, so the popup was told it
     // had more room than it has and had to shrink and scroll for no reason.
-    // The two numbers are now the same number.
-    let menu_h = g.get_menu_rows().row_count() as f32 * 30.0 + 8.0;
+    // The two numbers are now the same number. (Touch rows stand at 44 dp —
+    // the same number the popup clamps against there.)
+    let row_h = if g.get_touch_mode() { 44.0 } else { 30.0 };
+    let menu_h = g.get_menu_rows().row_count() as f32 * row_h + 8.0;
     let y = g
         .get_menu_y()
         .clamp(48.0, (g.get_window_h() - menu_h - 8.0).max(48.0));
@@ -6339,7 +6376,7 @@ pub fn apply_scene(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
                     .map(|b| b.id.0 as i32)
             };
             if let Some(id) = target {
-                state.fill_block_menu(id);
+                state.fill_block_menu(id, false);
                 g.set_block_menu_x(320.0);
                 g.set_block_menu_y(300.0);
                 g.set_block_menu_open_id(id);
@@ -6714,7 +6751,29 @@ pub fn apply_scene_overlay(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
                     .map(|b| b.id.0 as i32)
             };
             if let Some(id) = target {
-                state.fill_block_menu(id);
+                state.fill_block_menu(id, false);
+                g.set_block_menu_x(320.0);
+                g.set_block_menu_y(300.0);
+                g.set_block_menu_open_id(id);
+            }
+        }
+        // The phone's shape: touch mode mounts the thumb bar and the drawer
+        // rule (a closed sidebar — the startup state `launcher::run` gives a
+        // real device), and the long-press menu's rows stand at the 44 dp
+        // minimum with the touch-only "Insert below" row on them. The
+        // long-press itself cannot be shot headlessly; this scene is the
+        // menu it produces.
+        "touch-menu" => {
+            g.set_touch_mode(true);
+            g.set_sidebar_open(false);
+            let target = {
+                let d = state.doc.borrow();
+                d.page_blocks(core_page_id(state.open_page.get()))
+                    .get(4)
+                    .map(|b| b.id.0 as i32)
+            };
+            if let Some(id) = target {
+                state.fill_block_menu(id, true);
                 g.set_block_menu_x(320.0);
                 g.set_block_menu_y(300.0);
                 g.set_block_menu_open_id(id);
@@ -6769,7 +6828,7 @@ pub fn apply_scene_overlay(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
                 }
                 state.create_page(None);
             }
-            state.fill_block_menu(id);
+            state.fill_block_menu(id, false);
             g.set_block_menu_x(320.0);
             g.set_block_menu_y(600.0);
             g.set_block_menu_open_id(id);

@@ -36,7 +36,11 @@ import { DatabasePickList } from "components/DatabasePickList.slint";
 
 component BlockMenuPopup inherits PopupWindow {
     width: 176px;
-    height: UIState.block-menu-rows.length * 28px + 8px;
+    // Touch rows stand at the 44 dp minimum (ANDROID_NOTES' touch-target
+    // sweep); the desktop keeps the 28 px it has always had, so every
+    // headless scene and anchor math stays on the old numbers there.
+    property <length> row-h: UIState.touch-mode ? 44px : 28px;
+    height: UIState.block-menu-rows.length * row-h + 8px;
     // outside click / Escape dismiss; UIState syncs via the is-open mirror
     close-policy: PopupClosePolicy.close-on-click-outside;
 
@@ -57,9 +61,9 @@ component BlockMenuPopup inherits PopupWindow {
 
         for item[index] in UIState.block-menu-rows : Rectangle {
             x: 4px;
-            y: 4px + (index * 28px);
+            y: 4px + (index * row-h);
             width: parent.width - 8px;
-            height: 28px;
+            height: row-h;
             border-radius: Theme.radius-sm;
             background: bm-ta.has-hover ? Colors.surface-hover : transparent;
             animate background { duration: Theme.duration-instant; }
@@ -124,7 +128,9 @@ component BlockMenuPopup inherits PopupWindow {
 
 component SlashMenuPopup inherits PopupWindow {
     width: Math.min(280px, 760px);
-    height: UIState.slash-items.length * 32px + 8px;
+    // touch rows at the 44 dp minimum, desktop keeps 32 px (see BlockMenuPopup)
+    property <length> row-h: UIState.touch-mode ? 44px : 32px;
+    height: UIState.slash-items.length * row-h + 8px;
     // outside click / Escape dismiss; UIState syncs via the is-open mirror
     // in AppWindow (a popup must not read its own `is-open`)
     close-policy: PopupClosePolicy.close-on-click-outside;
@@ -146,9 +152,9 @@ component SlashMenuPopup inherits PopupWindow {
 
         for item[idx] in UIState.slash-items : Rectangle {
             x: 4px;
-            y: 4px + (idx * 32px);
+            y: 4px + (idx * row-h);
             width: parent.width - 8px;
-            height: 32px;
+            height: row-h;
             border-radius: Theme.radius-sm;
             // placeholder rows ("later" kinds) render muted and inert
             opacity: item.disabled ? 0.55 : 1.0;

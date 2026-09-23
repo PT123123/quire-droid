@@ -2,6 +2,68 @@
 
 Format: decision → context → consequences. Newest first.
 
+## ADR-0097 · On a phone the block menu is a long-press, and its rows stand at 44 dp
+
+Decision: a long-press on an editor row opens the ⋮⋮ block menu — the same
+popup the desktop's grip click opens, through the same
+`block-menu-opened(id, y, x)` callback with the row's own anchor — and the
+menu gains one touch-only row, **Insert below**, that runs the desktop "+"
+handle's insert (one empty paragraph, caret in it, the insert menu on top,
+anchored where the block menu just was). The three row menus scale their rows
+with the touch flag ADR-0096 introduced: `BlockMenuPopup` 28 → 44 px,
+`SlashMenuPopup` 32 → 44 px, `ContextMenu` 30 → 44 px, and every Rust anchor
+that multiplies a row count (`on_block_menu_opened`, the block menu's
+`reanchor`, `open_slash_at`, `on_block_plus`, `reanchor_page_menu`) reads the
+same `touch-mode` and multiplies the same number the popup draws. The gesture
+is touch-only: on the desktop the handle strip is still the affordance, every
+headless scene passes `false`, and the baseline did not move (see below).
+
+Context: ANDROID_NOTES has carried the number since 2026-09-20 — a finger has
+no hover, so `BlockHandle`'s `visible-flag: ta.has-hover || …` never reaches a
+visible state on a phone, and both the ⋮⋮ menu and the "+" insert menu have no
+reachable state at all; MobileBar dodged it for navigation, the editor's own
+chrome was "the half of all of `ui/` that costs". The gesture itself is three
+guards against one failure mode (the press that is really a scroll): a move
+past 12 px stops the 500 ms timer, a flick that steals the press arrives as
+`PointerEventKind.cancel` and stops it too, and the editor's scroll y at
+`triggered` is compared against its value at press-down in case the gesture
+was taken without either of those. A fired long-press sets a flag that
+swallows the click the lifting finger produces. Slint 1.18's `Timer` element
+defaults to `running: true`, so each realized row declares `running: false`
+explicitly — the default would arm a 500 ms wake-up on every row of every
+page the moment it is built.
+
+Consequences:
+
+- **The desktop is provably unchanged, not argued unchanged.** The control
+  build (`dc2399f`, clean worktree) and the changed tree swept 131 shared
+  scenes each and every hash matched byte for byte; the one new file is
+  `touch-menu.png`, the sweep scene that renders the phone's menu — 44 px
+  rows, the Insert below row, the thumb bar, no rail. The long-press itself
+  cannot be shot headlessly: no instrument here presses and holds, so the
+  gesture is a device pass (it and the IME spike are the two things a finger
+  still owes this milestone).
+- **The anchor heights live in Rust and the row heights live in .slint, and
+  they are the same number only by discipline.** That is the same seam
+  `reanchor_page_menu`'s comment already documents (it once said 28 + 16 while
+  the popup drew 30 px rows and over-promised room). The touch flag doubles
+  the seam's surface, so each multiplier now reads one helper-shaped `if`
+  rather than a literal; a popup whose row height changes without its anchor
+  following will clamp visibly wrong on a phone, which is the same way it
+  would fail on the desktop.
+- **"Insert below" is a menu row, not a second handle.** The desktop "+" and
+  the touch row run the same `InsertBlockAfter` + `open_slash_insert("")`
+  shape; the difference is only the anchor (the row's bottom edge on desktop,
+  the menu's own position on touch, because the row geometry left with the
+  delegate that reported it). The row is dropped by the lock's existing
+  retain — a locked page refuses inserts, and now the menu cannot offer one.
+- **What stays open is the rest of the 163.** The row menus were the menus a
+  finger actually lives in; the database popups (columns 30 px, kinds 32 px),
+  the settings dialog's rows and the file block's 26 px buttons are still
+  desktop-sized, and `DatabaseView.slint` still holds 38 literals. And drag
+  reorder is still handle-only: the DragArea lives on the invisible strip, so
+  on a phone move-up/move-down in the menu is the reorder path.
+
 ## ADR-0096 · Touch mode is a property on the `UIState` global, not a second UI tree
 
 Decision: `ui/Types.slint`'s `UIState` gains one property —

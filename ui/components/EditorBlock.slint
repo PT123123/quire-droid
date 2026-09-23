@@ -143,6 +143,20 @@ export component EditorBlock inherits Rectangle {
         - (block.kind == 8 ? 2 * Theme.spacing-md : 0px)
         - (block.kind == 22 ? root.embed-inset + 34px + Theme.spacing-sm : 0px);
 
+    // ── long-press → block menu (touch only) ─────────────────────────────
+    // A finger has no hover, so the ⋮⋮/+ handle strip never reaches a visible
+    // state on a phone (ANDROID_NOTES "What must be rebuilt"); the long-press
+    // is the stand-in for the grip click, and the menu's own "Insert below"
+    // row stands in for the +. Scroll defeats it three ways: a move past
+    // TOUCH_SLOP stops the timer, a flick that stole the press arrives as
+    // cancel, and the editor's scroll y is compared against the value at
+    // press-down in case the gesture was taken without either of those.
+    property <length> lp-x;
+    property <length> lp-y;
+    property <length> lp-scroll;
+    // a fired long-press must swallow the click the lifting finger produces
+    property <bool> lp-opened: false;
+
     // Text with an explicit width + wrap sizes itself (height-for-width);
     // while editing, the live input's height takes over.
     property <length> body-height:
@@ -182,15 +196,66 @@ export component EditorBlock inherits Rectangle {
         clicked => {
             // one TouchArea for the row: a second one over the picture would
             // have taken the hover the block handle depends on
-            if (is-image) {
-                UIState.preview-attachment = block.attachment;
+            if (lp-opened) {
+                // the long-press already opened the menu; the finger lifting
+                // is the end of that gesture, not a click on the row
+                lp-opened = false;
+            } else {
+                if (is-image) {
+                    UIState.preview-attachment = block.attachment;
+                }
+                // a table owns its clicks: each cell is the thing you aim at, and
+                // activating the table itself would put a caret in nowhere. Same
+                // for a layout: its boxes are where the text is. And same for a
+                // database: its cells are the aim points too (SPEC §三十九).
+                else if (!is-table && !is-columns && !is-database && !editing) {
+                    UIState.block-activate(block.id);
+                }
             }
-            // a table owns its clicks: each cell is the thing you aim at, and
-            // activating the table itself would put a caret in nowhere. Same
-            // for a layout: its boxes are where the text is. And same for a
-            // database: its cells are the aim points too (SPEC §三十九).
-            else if (!is-table && !is-columns && !is-database && !editing) {
-                UIState.block-activate(block.id);
+        }
+        pointer-event(event) => {
+            if (UIState.touch-mode && event.kind == PointerEventKind.down && !editing) {
+                lp-x = ta.mouse-x;
+                lp-y = ta.mouse-y;
+                lp-scroll = UIState.editor-scroll-y;
+                lp-opened = false;
+                lp-timer.stop();
+                lp-timer.start();
+            }
+            if (event.kind == PointerEventKind.cancel) {
+                // the flick took the press away (Slint resets the TouchArea
+                // and hands the gesture to the scroll)
+                lp-timer.stop();
+                lp-opened = false;
+            }
+            if (UIState.touch-mode && event.kind == PointerEventKind.up) {
+                lp-timer.stop();
+            }
+            if (UIState.touch-mode && event.kind == PointerEventKind.move
+                && (Math.abs(ta.mouse-x - lp-x) > 12px
+                    || Math.abs(ta.mouse-y - lp-y) > 12px)) {
+                // a drag is a scroll, not a press held still
+                lp-timer.stop();
+            }
+        }
+    }
+
+    lp-timer := Timer {
+        interval: 500ms;
+        // Timer defaults to running — a realized page of 10 000 rows must not
+        // wake up 500 ms after being built (Slint geometry traps: `visible:
+        // false` does not stop bindings; timers do not stop themselves)
+        running: false;
+        triggered => {
+            lp-timer.stop();
+            if (UIState.touch-mode
+                && Math.abs(ta.mouse-x - lp-x) < 12px
+                && Math.abs(ta.mouse-y - lp-y) < 12px
+                && Math.abs(UIState.editor-scroll-y - lp-scroll) < 1px) {
+                lp-opened = true;
+                // the same anchor the ⋮⋮ grip reports: row top in list coords
+                // + the text column x; the controller converts and clamps
+                UIState.block-menu-opened(block.id, root.row-y + top-margin, root.content-x);
             }
         }
     }

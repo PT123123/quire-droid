@@ -478,6 +478,26 @@ First functional release: a local, single-file-database notes workspace.
   of a path rewrite, and the same `[lib] name` is what the APK's
   `android.app.lib_name` and its `libquire_shell.so` are read from (ADR-0095)
 
+### Android (M9.a · touch chrome)
+- The editor's own chrome is reachable on a phone now (ADR-0097): a long-press
+  on a block row opens the ⋮⋮ block menu through the same callback the desktop
+  grip click uses, and the menu carries a touch-only **Insert below** row that
+  runs the "+" handle's insert. The gesture is guarded three ways against the
+  press that is really a scroll (a 12 px move, a stolen press arriving as
+  `cancel`, and the editor's scroll y compared against press-down), and a fired
+  long-press swallows the click the lifting finger produces
+- The three row menus stand at the 44 dp touch minimum in touch mode —
+  block menu 28 → 44 px, slash/insert menu 32 → 44 px, the page ⋯ menu
+  30 → 44 px — and every Rust anchor that multiplies a row count multiplies the
+  same number the popup draws. The desktop keeps its old numbers, and the sweep
+  proves it: 131 shared scenes byte-identical against a control build of
+  `dc2399f`, the one new file being `touch-menu.png`, the scene that renders
+  the phone's menu
+- Known shape: the database popups, the settings rows and the file block's
+  26 px buttons are still desktop-sized (the rest of the 163-literal list), and
+  drag-reorder is still handle-only — on a phone the menu's Move up/down is
+  the reorder path
+
 ### Build & test
 - `just check`: `cargo check --all-targets`, the whole test suite, a release
   build. Visual regression and the RAM/CPU scenes run from

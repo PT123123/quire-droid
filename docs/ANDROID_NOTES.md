@@ -210,11 +210,19 @@ viewer still stand as the next two gates, in that order.
   files of `ui/`** as of this re-count, where the note said 31.
 - **The block renderer's hover model** — BlockHandle menus become
   long-press menus; the find bar moves to a system-style search field.
-  *Still open 2026-09-23, and it is the half of "all of `ui/`" that costs:*
-  a finger has no hover, so the block handle and the per-row "+" strips have no
-  reachable state on a phone. `MobileBar` was designed to dodge this — five
-  actions that live on the keyboard chords too — but the editor's own chrome is
-  not dodged.
+  *Partly closed 2026-09-23 (M9.a, ADR-0097): the long-press landed — a held
+  press on a row opens the ⋮⋮ menu through the same callback the grip click
+  uses, three guards keep a scroll from firing it, and the menu gains a
+  touch-only "Insert below" row so the "+" has a door too. The three row
+  menus stand at 44 dp in touch mode, with every Rust anchor multiplying the
+  same number; the desktop baseline provably did not move (131 shared sweep
+  scenes byte-identical against a `dc2399f` control build, the one new file
+  `touch-menu.png`). Still open: the long-press itself has never been felt —
+  headless has no press-and-hold, so it joins the IME spike as the two things
+  a finger owes this milestone. Drag-reorder is still handle-only (the
+  DragArea lives on the invisible strip; Move up/down in the menu is the
+  phone's reorder path), and the rest of the sub-44 px inventory — database
+  popups, settings rows, the file block's 26 px buttons — is desktop-sized.*
 - **Window size persistence** — replaced by safe-area + fullscreen.
 
 ## Known risks (SPEC §二十八)

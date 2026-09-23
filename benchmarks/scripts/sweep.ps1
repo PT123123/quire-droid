@@ -40,6 +40,7 @@ $all = @(
     "columns", "columns-3", "columns-marks",
     "slash", "plus", "block-menu", "move-to", "move-to-tall", "page-move-to", "page-style", "text-color",
     "bg-color", "link", "menu", "palette", "palette-nav", "search", "search-notes",
+    "touch-menu",
     "dialog", "settings",
     "style-serif", "style-mono", "style-small", "style-full", "style-tight",
     "page-icon", "icon-picker",

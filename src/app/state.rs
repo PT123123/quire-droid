@@ -1839,6 +1839,9 @@ impl AppState {
     pub const IMAGE_WIDTH_BASE: i32 = 500_000;
     /// Plus the index into `Lang::ALL`, same reason.
     pub const CODE_LANG_BASE: i32 = 600_000;
+    /// Touch-only row (see `fill_block_menu`): insert an empty paragraph
+    /// below the block and open the "+" insert menu on it.
+    pub const INSERT_BELOW_ACTION: i32 = 15;
 
 
     /// Fill the handle menu for one block — Notion's ⋮⋮ set, minus the
@@ -1849,10 +1852,17 @@ impl AppState {
     ///   1..8    root actions + Turn into (7) + Back (8)
     ///   9..14   copy link / Move to / Text color / Background color opens,
     ///           Image width (13, pictures only) and Language (14, code only)
+    ///   15      Insert below (touch only)
     ///   100+k   Turn-into target kinds
     ///   MOVE_TO_BASE+pid / COLOR_TEXT_BASE+slot / COLOR_BG_BASE+slot
     ///   IMAGE_WIDTH_BASE+percent / CODE_LANG_BASE+index of `Lang::ALL`
-    pub fn fill_block_menu(&self, id: i32) {
+    /// `touch` adds the row that stands in for the desktop's "+" handle: a
+    /// finger has no hover, so the handle strip never becomes visible or
+    /// tappable on a phone (ANDROID_NOTES), and the long-press that opens this
+    /// menu has no "+" half of its own. The controller passes its
+    /// `touch-mode`; headless scenes pass `false` so the desktop menu shape is
+    /// unchanged everywhere the baseline was shot.
+    pub fn fill_block_menu(&self, id: i32, touch: bool) {
         let mut rows = vec![
             row(7, "Turn into", "chevron-right", false, -1, false),
             row(3, "Duplicate", "copy", false, -1, false),
@@ -1864,6 +1874,16 @@ impl AppState {
             row(2, "Move down", "chevron-down", false, -1, false),
             row(4, "Copy block", "copy", false, -1, false),
         ];
+        if touch {
+            rows.push(row(
+                AppState::INSERT_BELOW_ACTION,
+                "Insert below",
+                "plus",
+                false,
+                -1,
+                false,
+            ));
+        }
         if self.block_kind(id) == Some(BlockKind::Image) {
             rows.insert(1, row(13, "Image width", "chevron-right", false, -1, false));
         }
@@ -14190,6 +14210,52 @@ mod tests {
         assert!(
             state.move_block_to_page(moved, page),
             "control: unlock the destination and the same move lands"
+        );
+    }
+
+    /// The touch-only row and the touch row height are one decision in two
+    /// halves: the long-press menu stands in for the ⋮⋮/+ handle a finger can
+    /// never hover (ANDROID_NOTES "What must be rebuilt"), so it must carry
+    /// the insert door, and the desktop menu must keep the shape every
+    /// baseline was shot with. A locked page drops it with the rest of the
+    /// editing rows — the retain that keeps only the two take-only rows is
+    /// the whole policy, and this is the assertion that it reaches the new row.
+    #[test]
+    fn the_touch_menu_offers_insert_below_and_the_desktop_menu_does_not() {
+        use super::AppState;
+        use slint::Model as _;
+
+        let state = AppState::new(&plain_args(), None);
+        let page = state.create_page(None);
+        let host = state.start_page().expect("a new page takes its first block");
+
+        state.fill_block_menu(host, false);
+        let desktop: Vec<i32> = (0..state.block_menu.row_count())
+            .map(|i| state.block_menu.row_data(i).unwrap().id)
+            .collect();
+        assert!(
+            !desktop.contains(&AppState::INSERT_BELOW_ACTION),
+            "the desktop menu is unchanged: no insert row without touch"
+        );
+
+        state.fill_block_menu(host, true);
+        let touch: Vec<i32> = (0..state.block_menu.row_count())
+            .map(|i| state.block_menu.row_data(i).unwrap().id)
+            .collect();
+        assert_eq!(
+            touch.iter().filter(|a| **a == AppState::INSERT_BELOW_ACTION).count(),
+            1,
+            "the touch menu carries the insert door, exactly once"
+        );
+
+        state.set_page_locked(page, true);
+        state.fill_block_menu(host, true);
+        let locked: Vec<i32> = (0..state.block_menu.row_count())
+            .map(|i| state.block_menu.row_data(i).unwrap().id)
+            .collect();
+        assert!(
+            !locked.contains(&AppState::INSERT_BELOW_ACTION),
+            "a locked page refuses edits, and inserting is one"
         );
     }
 
