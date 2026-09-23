@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- document / page icon, black glyph on transparent background -->
+  <path fill="#000000" d="
+    M8 20
+    L8 14
+    Q8 10 12 10
+    L74 10
+    L94 30
+    L94 84
+    Q94 92 86 92
+    L22 92
+    L8 78
+    Z"/>
+  <!-- folded-page trapezoid at top -->
+  <polygon points="14,14 72,14 84,24 24,24" fill="#ffffff"/>
+  <!-- white paper inset -->
+  <rect x="26" y="28" width="62" height="58" rx="5" fill="#ffffff"/>
+  <!-- text lines -->
+  <rect x="36" y="42" width="46" height="6" rx="2" fill="#000000"/>
+  <rect x="36" y="56" width="46" height="6" rx="2" fill="#000000"/>
+  <rect x="36" y="70" width="32" height="6" rx="2" fill="#000000"/>
+</svg>

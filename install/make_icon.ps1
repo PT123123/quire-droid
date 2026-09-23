@@ -1,24 +1,32 @@
-# Quire app icon — drawn here, not hand-made, so the asset is reproducible.
+# Quire app icon — rasterised from the artwork in this folder, not drawn here.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File install\make_icon.ps1
 #
-# Writes, all from the one picture below (a gradient field and a `Q` drawn as a
-# ring plus a tail stroke, so nothing depends on an installed font):
+# install\icon.svg is the artwork's source and install\icon_master_1024.png is
+# its 1024 px raster: a document glyph on a **transparent** background — only
+# the glyph's own pixels are opaque, so no frame ships a plate behind it. Every
+# size below is that one picture scaled, which is what keeps them agreeing.
 #
-#   install\quire.ico          the exe/Start-menu icon: 16, 24, 32, 48, 64, 128,
-#                              256 px frames in one container
-#   install\quire.png          the 256 px frame, for Slint's `Window.icon`
+# Writes:
+#   install\quire.ico      the exe/Start-menu icon: 16, 24, 32, 48, 64, 128 and
+#                          256 px frames in one container
+#   install\quire.png      the 256 px frame (nothing in the shell reads it —
+#                          Slint 1.18 has no Window::set_icon — but the
+#                          installer check and the docs name it)
+#
+# and, in this repo only, the Android launcher icon:
 #   android\res\mipmap-*\ic_launcher.png
-#                              the launcher icon, per density (48/72/96/144/192)
+#                          the launcher icon, per density (48/72/96/144/192)
 #   android\res\drawable-*\ic_launcher_foreground.png
-#                              the adaptive icon's foreground: the Q alone on
-#                              transparent, drawn inside the 108 dp canvas'
-#                              72 dp safe zone (162/216/324/432/108 px)
+#                          the adaptive icon's foreground: the same glyph inside
+#                          the 108 dp canvas' central 72 dp safe zone, on
+#                          transparent (a launcher masks the outer ring away, so
+#                          a glyph drawn to the full canvas would lose its edges)
 #   android\res\mipmap-anydpi-v26\ic_launcher.xml
-#                              the adaptive icon itself (API 26+)
+#                          the adaptive icon itself (API 26+)
 #   android\res\values\ic_launcher_background.xml
-#                              its background, the same navy the gradient starts
-#                              from
+#                          its background — transparent, matching the art: the
+#                          mark is the whole picture, so no plate is painted
 #
 # The Android half exists because cargo-apk ships no icon unless `resources`
 # names a `res/` tree: the generated AndroidManifest had no `android:icon` at
@@ -28,33 +36,56 @@
 
 Add-Type -AssemblyName System.Drawing
 
-$top = [System.Drawing.Color]::FromArgb(255, 14, 27, 46)      # #0E1B2E
-$bottom = [System.Drawing.Color]::FromArgb(255, 10, 36, 66)   # #0A2442
-$ink = [System.Drawing.Color]::FromArgb(255, 245, 247, 250)   # near white
-$accent = [System.Drawing.Color]::FromArgb(255, 94, 234, 212) # #5EEAD4
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $here
 
-# The Q mark, inside a reference square of `$size` placed at ($ox, $oy). Every
-# length is a fraction of that square, which is what keeps the ring readable at
-# 16 px and keeps the adaptive foreground and the legacy icon the same drawing.
-function Draw-QuireMark($g, [double]$ox, [double]$oy, [double]$size) {
-    $stroke = [Math]::Max(1.5, $size * 0.10)
-    $ring = $size * 0.30
-    $cx = $ox + $size * 0.5
-    $cy = $oy + $size * 0.46
+$masterPath = Join-Path $here 'icon_master_1024.png'
+if (-not (Test-Path $masterPath)) { throw "no artwork at $masterPath" }
+$master = [System.Drawing.Bitmap]::FromFile($masterPath)
 
-    $pen = New-Object System.Drawing.Pen($ink, $stroke)
-    $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $g.DrawEllipse($pen, ($cx - $ring), ($cy - $ring), ($ring * 2), ($ring * 2))
+# Where the glyph actually is inside the master. The art carries its own margin,
+# so the adaptive foreground — which has to fit a *safe zone* rather than the
+# whole canvas — is sized from these bounds instead of from the file's edges.
+function Get-ContentBox($bmp) {
+    $rect = New-Object System.Drawing.Rectangle 0, 0, $bmp.Width, $bmp.Height
+    $data = $bmp.LockBits($rect,
+        [System.Drawing.Imaging.ImageLockMode]::ReadOnly,
+        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    try {
+        $stride = $data.Stride
+        $bytes = New-Object byte[] ($stride * $bmp.Height)
+        [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+    } finally {
+        $bmp.UnlockBits($data)
+    }
+    $minX = $bmp.Width; $minY = $bmp.Height; $maxX = -1; $maxY = -1
+    for ($y = 0; $y -lt $bmp.Height; $y++) {
+        $row = $y * $stride
+        for ($x = 0; $x -lt $bmp.Width; $x++) {
+            if ($bytes[$row + $x * 4 + 3] -gt 8) {
+                if ($x -lt $minX) { $minX = $x }
+                if ($x -gt $maxX) { $maxX = $x }
+                if ($y -lt $minY) { $minY = $y }
+                if ($y -gt $maxY) { $maxY = $y }
+            }
+        }
+    }
+    if ($maxX -lt 0) { throw "the master is fully transparent" }
+    New-Object System.Drawing.Rectangle $minX, $minY, ($maxX - $minX + 1), ($maxY - $minY + 1)
+}
 
-    $tail = New-Object System.Drawing.Pen($accent, $stroke)
-    $tail.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $tail.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $edge = [Math]::Sqrt(2) / 2
-    $g.DrawLine($tail,
-        ($cx + $ring * $edge * 0.7), ($cy + $ring * $edge * 1.1),
-        ($cx + $ring * $edge * 2.0), ($cy + $ring * $edge * 2.2))
-    $pen.Dispose(); $tail.Dispose()
+$box = Get-ContentBox $master
+
+function New-Canvas([int]$size) {
+    $bmp = New-Object System.Drawing.Bitmap $size, $size, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
+    $g.Clear([System.Drawing.Color]::Transparent)
+    ,@($bmp, $g)
 }
 
 function Save-Png($bmp) {
@@ -65,52 +96,31 @@ function Save-Png($bmp) {
     ,$bytes
 }
 
-# The rounded-square app icon: 22% corner radius, the same shape at every size.
+# The legacy frame: the picture, edge to edge, on a transparent square. Windows
+# draws these itself (the shell paints its own tile behind an icon), so nothing
+# is added here but the art.
 function New-FramePng([int]$size) {
-    $bmp = New-Object System.Drawing.Bitmap $size, $size, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.Clear([System.Drawing.Color]::Transparent)
-
-    $radius = $size * 0.22
-    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $d = $radius * 2
-    $path.AddArc(0, 0, $d, $d, 180, 90)
-    $path.AddArc($size - $d, 0, $d, $d, 270, 90)
-    $path.AddArc($size - $d, $size - $d, $d, $d, 0, 90)
-    $path.AddArc(0, $size - $d, $d, $d, 90, 90)
-    $path.CloseFigure()
-
-    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
-        (New-Object System.Drawing.RectangleF(0, 0, $size, $size)),
-        $top, $bottom, 90)
-    $g.FillPath($brush, $path)
-    $brush.Dispose(); $path.Dispose()
-
-    Draw-QuireMark $g 0 0 $size
-
+    $c = New-Canvas $size
+    $bmp = $c[0]; $g = $c[1]
+    $g.DrawImage($master, (New-Object System.Drawing.Rectangle 0, 0, $size, $size))
     $g.Dispose()
     Save-Png $bmp
 }
 
-# The adaptive icon's foreground: transparent, and the mark sized to the inner
-# two-thirds of the canvas. The launcher masks the outer third away, so a mark
-# drawn to the full canvas would lose its ring to the mask.
+# The adaptive icon's foreground is a 108 dp canvas whose outer ring a launcher
+# may mask away, so the glyph is fitted to the central 72 dp (2/3) safe zone
+# instead of to the canvas.
 function New-ForegroundPng([int]$size) {
-    $bmp = New-Object System.Drawing.Bitmap $size, $size, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.Clear([System.Drawing.Color]::Transparent)
-
-    $safe = $size / 3.0
-    Draw-QuireMark $g $safe $safe $safe
-
+    $c = New-Canvas $size
+    $bmp = $c[0]; $g = $c[1]
+    $scale = ($size * 0.66) / [Math]::Max($box.Width, $box.Height)
+    $w = [int][Math]::Round($box.Width * $scale)
+    $h = [int][Math]::Round($box.Height * $scale)
+    $dest = New-Object System.Drawing.Rectangle ([int](($size - $w) / 2)), ([int](($size - $h) / 2)), $w, $h
+    $g.DrawImage($master, $dest, $box, [System.Drawing.GraphicsUnit]::Pixel)
     $g.Dispose()
     Save-Png $bmp
 }
-
-$here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$root = Split-Path -Parent $here
 
 $sizes = 16, 24, 32, 48, 64, 128, 256
 $frames = @{}
@@ -193,9 +203,10 @@ New-Item -ItemType Directory -Force -Path $values | Out-Null
 $colors = @'
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0E1B2E</color>
+    <color name="ic_launcher_background">#00000000</color>
 </resources>
 '@
 [System.IO.File]::WriteAllText((Join-Path $values 'ic_launcher_background.xml'), $colors)
 
-"wrote android\res (5 densities, adaptive icon, background)"
+"wrote android\res (5 densities, adaptive icon, transparent background)"
+$master.Dispose()
