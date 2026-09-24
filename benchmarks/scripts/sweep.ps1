@@ -54,6 +54,12 @@ $all = @(
     "dark-page-templates", "dark-page-versions", "dark-mention", "dark-date",
     "dark-backlinks", "dark-dangling", "dark-synced", "dark-synced-source-gone",
     "dark-move-to-tall",
+    # SPEC §四十一 (M15): the organizer's own scenes. The area is this shell's
+    # single-pane copy, so these scenes are the only place its list→detail flip
+    # is photographed at all — a scene nobody sweeps is a scene nobody measures.
+    "notes", "notes-detail", "notes-search",
+    "tasks", "tasks-detail", "tasks-list", "tasks-overdue",
+    "dark-notes", "dark-notes-detail", "dark-tasks", "dark-tasks-detail",
     # SPEC §三十九 (M14): the database's own scenes. They were run out of a
     # separate list for six slices, which is how two of them spent those slices
     # photographing the *same* table — a scene nobody sweeps is a scene nobody

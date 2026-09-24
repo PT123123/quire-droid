@@ -3581,7 +3581,18 @@ theirs 桌面的 organizer 提交），不是打补丁：`state.rs` +1505、`con
 `ShortcutRow` 未使用，**在 `dfd6398` 的干净树上同样存在**，不是这一刀引入）；
 `cargo test --workspace` **122 passed / 0 failed / 10 ignored**（含 5 条 organizer 测试）；
 `just android-check` 通过；`just android-lib` 通过（aarch64 cdylib 真的链上了，
-`Finished release profile in 3.40s`）。
+`Finished release profile in 3.40s`）。像素侧：单拍一张 `just shot tasks-detail` 人眼看过
+（单栏形状、返回键、两个页签、＋、标题/清单/优先级/截止/重复/标签/子任务/备注 全在），
+随后把 organizer 的 11 个场景补进 `benchmarks/scripts/sweep.ps1` 的 `$all`（**在这之前
+droid 的 sweep 根本没拍过这个区域**）并单独跑了一遍：7 张浅色场景各画出东西
+（`notes` A3989C80 / `notes-detail` AC78BF8E / `notes-search` B5833BF7 / `tasks` 16ACE63D /
+`tasks-detail` 44178B84 / `tasks-list` CD67691D / `tasks-overdue` ECC13635，`notes-detail`
+与 `tasks-detail` 逐张人眼看过：正文、标签、年龄行、返回键都在）。全量 sweep 也在
+132/`8c6c1cf` 上跑完，其余场景无一报错。
+
+**dark 臂在这边仍不能当证据**（见下面的欠账）：4 张 `dark-*` 与浅色孪生**逐字节相同**
+（`dark-notes` == `notes`，`dark-tasks-detail` == `tasks-detail`…），正是桌面修掉的那个
+旧账在本仓的形态。
 
 > 第一次跑 `android-lib` 是失败的，但**失败在依赖里**：skia 预编译包下载被重置
 > （`curl: (56) Recv failure`，网络到 GitHub releases），回落到源码构建后
