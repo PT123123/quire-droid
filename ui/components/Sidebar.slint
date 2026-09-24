@@ -13,11 +13,18 @@ component SidebarPinnedRow inherits Rectangle {
     in property <string> icon-name;
     in property <string> label;
     in property <string> shortcut-hint: "";
+    // The row's area is the one being shown (SPEC §四十一's two rows). A pinned
+    // row that is a *place* rather than an action has to say so, or the sidebar
+    // gives no answer to "where am I": the page tree's own selection is about a
+    // page, and neither of these two opens one.
+    in property <bool> selected: false;
     callback clicked();
 
     height: 28px;
     border-radius: Theme.radius-sm;
-    background: ta.has-hover ? Colors.hover-fill : transparent;
+    background: root.selected
+        ? Colors.surface-hover
+        : (ta.has-hover ? Colors.hover-fill : transparent);
     animate background { duration: Theme.duration-instant; }
 
     HorizontalLayout {
@@ -30,13 +37,15 @@ component SidebarPinnedRow inherits Rectangle {
             height: 16px;
             size: 15px;
             name: root.icon-name;
-            color: ta.has-hover ? Colors.text-secondary : Colors.text-muted;
+            color: root.selected
+                ? Colors.text-primary
+                : (ta.has-hover ? Colors.text-secondary : Colors.text-muted);
         }
         Text {
             text: root.label;
             font-family: Typography.ui-font;
             font-size: Typography.size-ui;
-            color: Colors.text-secondary;
+            color: root.selected ? Colors.text-primary : Colors.text-secondary;
         }
         Rectangle { width: 0px; }
         if root.shortcut-hint != "" : Text {
@@ -109,8 +118,27 @@ export component Sidebar inherits Rectangle {
             }
         }
 
-        // ---- pinned rows: search / settings ----
-        // Touch devices have no keyboard, so these rows carry no chord hints.
+// ---- pinned rows: the two areas, then search / settings ----
+        // SPEC §四十一's two rows sit above search because they are *places*:
+        // they change what the window is showing, while search and settings open
+        // a panel over it. A touch device has no keyboard, so the rows carry no
+        // chord hints — and "笔记"/"任务" are destinations, not commands.
+        SidebarPinnedRow {
+            icon-name: "note";
+            label: "笔记";
+            selected: UIState.active-area == "organizer" && UIState.org-tab == 0;
+            clicked => {
+                UIState.org-open-requested(0);
+            }
+        }
+        SidebarPinnedRow {
+            icon-name: "todo-check";
+            label: "任务";
+            selected: UIState.active-area == "organizer" && UIState.org-tab == 1;
+            clicked => {
+                UIState.org-open-requested(1);
+            }
+        }
         SidebarPinnedRow {
             icon-name: "search";
             label: "搜索";

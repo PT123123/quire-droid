@@ -2,6 +2,156 @@
 
 Format: decision → context → consequences. Newest first.
 
+## ADR-0104 · This shell's organizer is one pane, and the back control is a deselect
+
+Decision: `quire-droid`'s `OrganizerArea.slint` is a **single pane**, not the two the
+desktop mounts. The list fills the window, tapping a row flips to that row's self, and
+a back control flips back — by re-invoking the selection callback with `-1`
+(`org-note-selected(-1)`), which is the deselect the desktop's list pane never has to
+produce because it never stops showing the list. Rows stand at 44 dp, and the file
+carries no `has-hover` fill, no `mouse-cursor`, and no keyboard hint of any kind.
+
+Context: the two shells share five near-copy files, and `OrganizerArea.slint` is the one
+where the *layout* cannot be shared: a phone has no 288 px column to give away, and a
+list beside a detail at 1080 logical pixels is two unusable slivers. The field slots
+(`org-field` / `org-field-edited`), the tab numbers, the view numbers and the sort
+numbers stay identical to the desktop's, so a keystroke commits to the same place on
+either build; only the geometry and the affordances differ.
+
+Consequences: two files to keep in step — a change to the *vocabulary* (a new field
+slot, a new chip) must land in both, while a change to the *layout* is deliberately
+per-shell. The deselect-by-callback trick means the area needs no new Rust surface: the
+controller's existing handler already treats any id as "select this row", and `-1` is
+"none", which is exactly the state the detail view is gated on. It also means a tap on a
+tab while a detail is open switches tab and *keeps* the detail open if a row of that tab
+is selected — the back control is the way out, and that is deliberate (the row the user
+was reading does not vanish because they glanced at the other tab).
+
+## ADR-0103 · A delete says so in the notice band, and the wording is shared
+
+Decision: deleting a note or a task writes one line into the notice band — this shell's
+only transient surface — rather than opening a confirmation dialog or a toast. The
+string is produced by the same `AppState` method the desktop uses, so the two shells
+cannot drift into two different sentences for the same event; the desktop's version
+names the Ctrl+Z chord, this shell's names the bar's own undo.
+
+Context: this shell has no auto-dismissing message surface (ADR-0097's menu chrome and
+M9's bar are the only transient things), and a delete is a one-tap action on a phone —
+the row is gone before a dialog could be answered. Three seconds of confirmation is the
+desktop's answer; a persistent line the user can read and then dismiss is this shell's.
+
+Consequences: the band can hold more than one line, so a burst of deletions stacks
+rather than replaces. Nothing here is a confirmation step: the two-tap discipline the
+desktop uses for templates and versions (a deliberate second click on a row the user
+named) is not available for a row that *is* its title.
+
+## ADR-0102 · The organizer loads whole, and it is not windowed
+
+Decision: `load_organizer` reads `notes` / `task_lists` / `tasks` in full at startup, and
+the projections window in memory. The three tables are not read through a windowed query
+the way the database layer's records are.
+
+Context: §二十二's red line is about a library that can naturally grow to 10 000 rows per
+entity — a database with many records and many properties. A user's own notes and tasks
+are a different order of magnitude (hundreds, not tens of thousands), the projections
+already fold the whole catalog to answer "which rows are in 今天" (a predicate over every
+row, not a slice of one), and the smart views are five different questions asked of the
+same set — so a windowed read would be a `LIMIT` with nothing to `LIMIT` on. What the
+windowed read buys the database layer is the *records* being unpredictable in size and
+count; it buys nothing here.
+
+Consequences: the load is one query per table at startup and the catalog lives in memory
+for the session, which is what makes the projections and the undo stack cheap. If the
+organizer ever grows a bulk-import path, this ADR is the one to revisit — the number to
+watch is the fold, not the read.
+
+## ADR-0101 · Deleting a list files its tasks in the inbox in the same change
+
+Decision: `Command::DeleteTaskList { list, moved }` deletes the list *and* reassigns each
+of its tasks to `ListId::INBOX` in one batch, and the `moved` rows travel *with* the
+command rather than being recomputed. One Ctrl+Z brings the list and its tasks back
+together.
+
+Context: a task's list is a real column (`tasks.list`), so "delete the list" is not a
+cascade — the rows would survive it, pointing at an id that no longer exists. The
+alternative shapes were worse: cascade-delete the tasks (silently destroying work the
+user did not ask to delete), or leave them dangling (a task whose list chip renders as
+nothing). The inbox is the sentinel (`ListId::INBOX` = -1) rather than a row, so "the
+list is gone" and "the task is in the inbox" are the same statement.
+
+Consequences: the command carries the rows it is about to move, so undo does not have to
+re-derive them from a state that has already changed — and `DeleteTaskList` is the one
+organizer command whose plan is not a pure function of the current catalog. A future
+"move these tasks elsewhere, then delete the list" reuses the same shape with a different
+target.
+
+## ADR-0100 · The organizer gets its own undo stack, and it is not a page id
+
+Decision: the organizer's commands are undone on their own history stack,
+`core::ORGANIZER_STACK` — a `PageId` value no page can ever hold. A Ctrl+Z in the area
+takes back the area's last step and nothing else; a Ctrl+Z on a page still takes back the
+page's last edit. The two stacks never see each other's entries.
+
+Context: the document's undo is per page (`History`), and the organizer is not a page —
+its rows are independent of any document, and the area is open *beside* a page rather
+than replacing it. Putting the organizer's changes on the open page's stack (the cheapest
+implementation: one stack, no sentinel) would mean a note's delete could be undone by a
+chord pressed while looking at a document, and a paragraph's move could be undone while
+looking at a note — the user cannot see which stack they are about to pop.
+
+Consequences: the sentinel page id is the whole mechanism: `History` is already keyed by
+`PageId`, so a reserved value gives the area a stack with no new type, no new field on
+`AppState`, and no branch in the command layer. The reserved value must stay unallocatable
+— a page created with it would collide with the area's history, which is why it is a
+`const` in the core crate rather than a literal in the shell. Both shells share it,
+because it is the *only* thing that makes the two stacks tell each other apart, and it
+ships with the crate.
+
+## ADR-0099 · An organizer edit is a row-level change, not a document
+
+Decision: the organizer's nine writes are row-level `Change`s (`Change::NoteAdded` /
+`NoteUpdated` / `NoteDeleted` and the same for `TaskList` and `Task`), applied one row at
+a time in `apply_one`, with a `plan` branch that does not consult any document — so
+writing the same row twice with the same values is not one undo step, and the command
+layer can compare a row against the current one to decide whether anything moved.
+
+Context: the document model's changes are whole-document replacements (`Change::SetDoc`
+family), which is right for a page — the page *is* one document and every edit moves it.
+An organizer row is not a document: a note's body is one row, its tags are another
+column of that row, and a task's subtasks are a JSON column. Modelling the area as one
+big document per tab would make "type in the title" a full-document rewrite, make the
+undo step coarser than the edit, and put the area's storage in the page layer's tables.
+
+Consequences: nine changes and nine command arms, one per row kind per verb — more
+surface than one `SetOrganizer`, and the price of the plan layer being able to say "this
+changed nothing" for a row. The JSON shapes for `tags` and `subtasks` live in
+`storage::organizer_store` alone, so the change layer passes them through as opaque
+strings and only that one file has to agree with the file format. `set_*` rewrites the
+whole row and calls `require_hit`, which is what makes "did this row move" a cheap
+comparison rather than a diff.
+
+## ADR-0098 · The organizer is a second top-level area, not a page or a block kind
+
+Decision: notes and tasks live in their own top-level area, chosen by
+`UIState.active-area` (`"page"` / `"organizer"`) — the same slot the document occupies,
+not a new page kind, not a new block kind, and not a tab inside a page. `AppShell` swaps
+`Editor` for `OrganizerArea`; the page stays where it was and comes back unchanged.
+
+Context: the three shapes that were on the table — a new block type inside a document
+(the "table" precedent), a special page kind in the tree, or an area of its own. A block
+would have tied a user's tasks to a page they have to remember to open, and made the task
+list part of the document's projection (and therefore its undo, its export, its search
+index). A page kind would have made the tree carry a second sort of thing, and the tree's
+drop/move/duplicate/export code would each need to learn about it. An area costs exactly
+one property and one branch in `AppShell`, and nothing in the page layer changes at all.
+
+Consequences: the area is *not* in the sidebar tree, so it cannot be renamed, moved,
+nested, exported or versioned — deliberately, because none of those mean anything for a
+set of notes. It also means the area is not reachable by a page's own navigation: the
+doors are the top bar's two rows, the drawer's two rows, the thumb bar's one item, and
+the command palette. `active-area` is a plain string rather than an enum because the two
+values are the UI's own vocabulary and Rust never branches on it.
+
 ## ADR-0097 · On a phone the block menu is a long-press, and its rows stand at 44 dp
 
 Decision: a long-press on an editor row opens the ⋮⋮ block menu — the same

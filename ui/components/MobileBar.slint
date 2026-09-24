@@ -17,7 +17,7 @@ component BarItem inherits Rectangle {
 
     // `parent` is not reachable from a component's own root. The bar gives each
     // item an equal share of its width and full height at the use site
-    // (`width: parent.width / 6`); an explicit width is used instead of
+    // (`width: parent.width / 7`); an explicit width is used instead of
     // `horizontal-stretch` because this build does not honor a root-level
     // stretch for layout children. `vertical-stretch` below is honored and
     // claims the bar's full height.
@@ -78,7 +78,7 @@ export component MobileBar inherits Rectangle {
         spacing: 0px;
 
         BarItem {
-            width: parent.width / 6;
+            width: parent.width / 7;
             icon-name: "arrow-left";
             label: "后退";
             clicked => {
@@ -86,7 +86,7 @@ export component MobileBar inherits Rectangle {
             }
         }
         BarItem {
-            width: parent.width / 6;
+            width: parent.width / 7;
             icon-name: "arrow-right";
             label: "前进";
             clicked => {
@@ -94,7 +94,7 @@ export component MobileBar inherits Rectangle {
             }
         }
         BarItem {
-            width: parent.width / 6;
+            width: parent.width / 7;
             icon-name: "panel-left";
             label: "页面";
             clicked => {
@@ -102,7 +102,7 @@ export component MobileBar inherits Rectangle {
             }
         }
         BarItem {
-            width: parent.width / 6;
+            width: parent.width / 7;
             icon-name: "plus";
             label: "添加";
             clicked => {
@@ -110,7 +110,7 @@ export component MobileBar inherits Rectangle {
             }
         }
         BarItem {
-            width: parent.width / 6;
+            width: parent.width / 7;
             icon-name: "page";
             label: "新建";
             clicked => {
@@ -118,11 +118,21 @@ export component MobileBar inherits Rectangle {
             }
         }
         BarItem {
-            width: parent.width / 6;
+            width: parent.width / 7;
             icon-name: "search";
             label: "搜索";
             clicked => {
                 UIState.search-open-requested();
+            }
+        }
+        // SPEC §四十一: the organizer is the sheet 笔记; the drawer's sidebar has
+        // the same row, and this is the thumb-reachable door to the same place.
+        BarItem {
+            width: parent.width / 7;
+            icon-name: "note";
+            label: "笔记";
+            clicked => {
+                UIState.org-open-requested(0);
             }
         }
     }

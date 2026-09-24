@@ -434,6 +434,69 @@ export struct DiffRow {
     text: string,
 }
 
+// ─── SPEC §四十一: notes and tasks ──────────────────────────────────────────
+// Three row shapes and one that belongs to another row. Rust decides every
+// word a row paints — labels, dates, counts — and the delegate places them, the
+// same contract the database rows have kept. The `[SubtaskRow]` array inside
+// `TaskRow` is why `SubtaskRow` is declared first: Slint resolves struct types
+// in declaration order.
+
+// One line of a task's checklist. It travels inside its task, in storage and on
+// the wire both, so a row here is only ever painted inside one.
+export struct SubtaskRow {
+    id: int,
+    title: string,
+    done: bool,
+}
+
+// One note: the list row *and* the detail panel's row, from one struct. A note
+// is small enough that the two are the same data — the delegate elides the
+// excerpt it does not show, and the editor binds `title`/`body`.
+export struct NoteRow {
+    id: int,              // -1 = no note selected
+    title: string,
+    body: string,
+    excerpt: string,      // the body's first line, for the list row
+    pinned: bool,
+    tags: string,         // already joined: a delegate never does string work
+    when: string,         // relative age ("3 分钟前")
+    selected: bool,
+}
+
+// One task list as its chip paints it.
+export struct TaskListRow {
+    id: int,              // -1 = the inbox chip (a sentinel, not a row)
+    name: string,
+    color: int,           // ColorKind slot for the dot
+    count: int,
+    selected: bool,
+    smart: bool,          // true for the inbox: the chip the *view* half owns
+}
+
+// One task: the list row and the detail panel's row again. `priority` and
+// `repeat` are the enums' slots and `color` a palette slot, so the UI names them
+// in its own language instead of Rust shipping words for a menu.
+export struct TaskRow {
+    id: int,              // -1 = no task selected
+    title: string,
+    done: bool,
+    priority: int,        // Priority slot: 0 none, 1 low, 2 medium, 3 high
+    due: string,          // the ISO the date input edits ("" = none)
+    due-label: string,    // what the row paints ("今天", "09-24")
+    overdue: bool,        // the badge, never folded into the label
+    list: int,
+    list-name: string,
+    list-color: int,
+    tags: string,
+    notes: string,
+    repeat: int,          // Repeat slot
+    subtasks: [SubtaskRow],
+    subtasks-done: int,
+    subtasks-total: int,
+    when: string,
+    selected: bool,
+}
+
 // The one place transient UI state lives. Components read/write it directly;
 // Rust reaches it through the generated global accessor.
 export global UIState {
@@ -1085,5 +1148,102 @@ export global UIState {
     callback dialog-cancelled();
     callback settings-open-requested();
     callback settings-close-requested();
+
+    // ─── SPEC §四十一: notes and tasks (the organizer) ──────────────────────
+    //
+    // A second top-level area, chosen by `active-area`. It has no page behind it
+    // and no block rows: the three models below are Rust's projections of the
+    // catalog, and everything the area shows that is not a row — the smart views'
+    // names, the priority words, the counts on the chips — is decided here.
+    //
+    // Which tab and which filter are showing is **session state** like every
+    // other "how the user is looking" fact (ADR-0073): a restart opens on
+    // 笔记 · 收集箱, and none of this reaches the file.
+    in-out property <string> active-area: "docs"; // "docs" | "organizer"
+    in-out property <int> org-tab: 0;             // 0 笔记, 1 任务
+    in-out property <int> org-view: 0;            // smart view slot, see Rust's SMART_*
+    in-out property <int> org-list: -1;           // stored list id, -1 = the chip decides
+    in-out property <string> org-query: "";
+    in-out property <int> org-sort: 0;            // 0 添加顺序, 1 优先级, 2 截止日期
+    in-out property <[NoteRow]> note-rows;
+    in-out property <[TaskRow]> task-rows;
+    in-out property <[TaskListRow]> task-list-rows;
+    // The selected row's *whole* self, so the detail panel binds fields instead
+    // of looking a row up in a model: `id` is -1 when nothing is selected, and
+    // every other field is then whatever the empty row says.
+    in-out property <NoteRow> org-note-detail;
+    in-out property <TaskRow> org-task-detail;
+    in-out property <int> org-selected-note: -1;
+    in-out property <int> org-selected-task: -1;
+    // The list a new task lands in, and the draft of a list name being typed.
+    in-out property <int> org-new-list-color: 0;
+    in-out property <string> org-new-list-name: "";
+    // Today, as the ISO the deadlines are stored as. From Rust because a UI has
+    // no clock: the row badge that says 今天 and the picker's own "今天" button
+    // have to mean the same day, and there is exactly one place that decides
+    // which day that is.
+    in-out property <string> org-today: "";
+
+    // ── the drafts ──
+    // One property per editable field of the detail pane, bound two-way by the
+    // input that owns it. Rust does not clear them while the user types: a
+    // rebuild after a commit writes the *committed* value back, which is the
+    // same string, so the caret never jumps.
+    in-out property <string> org-note-title-draft: "";
+    in-out property <string> org-note-body-draft: "";
+    in-out property <string> org-note-tags-draft: "";
+    in-out property <string> org-task-title-draft: "";
+    in-out property <string> org-task-notes-draft: "";
+    in-out property <string> org-task-tags-draft: "";
+    in-out property <string> org-task-due-draft: "";
+    in-out property <string> org-subtask-draft: "";
+    // Which field the 300 ms commit is pending on: the slot (`FIELD_*` in
+    // OrganizerArea.slint, `ORG_FIELD_*` in state.rs), the row it belongs to, and
+    // — for a checklist line — which subtask. A triple, and session state on
+    // purpose: it describes a keystroke in flight, not a document.
+    in-out property <int> org-field: 0;
+    in-out property <int> org-field-id: -1;
+    in-out property <int> org-field-sub: -1;
+
+    // opening the area (the sidebar's rows and the palette's two commands)
+    callback org-open-requested(int); // 0 笔记, 1 任务
+    callback org-close-requested(); // back to the document area
+    // notes
+    callback org-note-create();
+    callback org-note-selected(int);
+    callback org-note-title-set(int, string);
+    callback org-note-body-set(int, string);
+    callback org-note-pin-toggled(int);
+    callback org-note-tags-set(int, string);
+    callback org-note-deleted(int);
+    // tasks: the row's own switches are immediate, the text fields commit on blur
+    callback org-task-create();
+    callback org-task-selected(int);
+    callback org-task-title-set(int, string);
+    callback org-task-notes-set(int, string);
+    callback org-task-done-toggled(int);
+    callback org-task-priority-set(int, int);
+    callback org-task-due-set(int, string);
+    callback org-task-repeat-set(int, int);
+    callback org-task-tags-set(int, string);
+    callback org-task-list-set(int, int); // task, list id (-1 = 收集箱)
+    callback org-task-deleted(int);
+    callback org-subtask-added(int);
+    callback org-subtask-edit(int, int); // task, subtask: start editing that line's title
+    callback org-subtask-title-set(int, int, string);
+    callback org-subtask-done-toggled(int, int, bool);
+    callback org-subtask-deleted(int, int);
+    // lists
+    callback org-list-created();
+    callback org-list-name-set(int, string);
+    callback org-list-color-set(int, int);
+    callback org-list-deleted(int);
+    // filters
+    callback org-view-picked(int);
+    callback org-list-picked(int);
+    callback org-sort-picked(int);
+    callback org-query-changed();
+    // a draft changed: the field slot it belongs to, which row, which subtask
+    callback org-field-edited(int);
 }
 

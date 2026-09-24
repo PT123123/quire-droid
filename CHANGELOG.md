@@ -843,3 +843,28 @@ First functional release: a local, single-file-database notes workspace.
   the command registry), and a record owns its page in storage — so a record
   reached only through that page goes with it. Deleting the *record* is undoable
   and takes its page in the same step; that is the path this feature controls
+
+### 笔记与任务 (SPEC §四十一, M15)
+- A third area beside the pages: **笔记** and **任务** (`UIState.active-area`), with
+  the document still the other one. The data model is
+  `quire-core`'s `Note` / `TaskList` / `Task` / `Subtask` (this shell pins the
+  rev that carries it; migrations v24–v26 are `notes`, `task_lists`, `tasks`),
+  and the rows are written through the same command registry as everything
+  else — the organizer's edits are **their own undo stack**
+  (`core::ORGANIZER_STACK`), so one Ctrl+Z in the area never reaches the page
+  and the page's undo never resurrects a note
+- Notes carry a title, a body, tags and a pinned flag; tasks carry a title, a
+  list (the built-in 收集箱 or a stored one, each with a colour), a priority
+  (无/低/中/高), a due date, a repeat rule, tags, free-form notes and a
+  check-list of subtasks. The views are 收集箱 / 今天 / 近七天 / 全部 / 已完成,
+  sorted by 添加顺序 / 优先级 / 截止日期, and both tabs have their own search
+- **This shell's copy of the area is a single pane** (the desktop mounts the
+  same component as a list beside a detail): the list fills the screen, tapping
+  a row flips to its self, the back control flips back by deselecting the row.
+  Rows stand at 44 dp, there is no hover-only affordance and no keyboard hint
+  anywhere in it, and the thumb bar gained a seventh item — 笔记 — beside 后退 /
+  前进 / 页面 / 添加 / 新建 / 搜索
+- Deleting a task or a note writes its line into the notice band, which is this
+  shell's only transient surface; the wording names the chord on the desktop and
+  the bar's own undo here
+

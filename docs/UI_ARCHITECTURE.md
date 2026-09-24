@@ -571,6 +571,28 @@ title; both cost a rebuild to find and neither is in the docs where you look.
   characters. Bind the same width on every layer, and prove it with a fixture that
   has a line long enough to wrap — with nothing to wrap, all six agree and the
   scene passes while the feature is broken.
+* **A `Rectangle` has no preferred size, and an explicit `width` beats
+  `horizontal-stretch`.** A text field built as a `Rectangle` with an inner
+  `TextInput` — which is how the organizer's `OrgInput` is built, and how every
+  input in this codebase is built — has nothing to size itself from, so inside a
+  `HorizontalLayout` it collapses to zero pixels unless it is told otherwise.
+  Saying it twice, the wrong way, is what the desktop sweep caught: `width:
+  root.grow ? 0px : root.field-width` reads as "zero unless fixed" and is
+  *not* "stretch to fill" — the explicit width wins, so every growing field
+  came out 0 px wide and the task detail photographed as a pane with no title,
+  no tags and no notes. Express the growing arm as `min-width` + `max-width` +
+  `horizontal-stretch: 1` and leave `width` unbound; keep min = max =
+  `field-width` for the fixed arm. Same family as the `Text`-with-no-width rule
+  above: a leaf that cannot measure itself needs its frame spelled out.
+* **`else` is not a Slint keyword, and a component must be declared before it is
+  used.** Two parse errors worth knowing by heart: a conditional pair is
+  `if cond : A {}` / `if !cond : B {}` (there is no `else`), and a
+  `component` declared *below* the component that instantiates it is an
+  "Unknown element" — the compiler reads the file in order. `OrganizerArea` is
+  therefore declared last on purpose, after `ListPane` and `DetailPane`.
+* **`ScrollView` is a `std-widgets` import, not a built-in.** `ListView` alone
+  will compile a file that uses `ScrollView` right up until the element is
+  reached, then fail with "Unknown element".
 
 ## Slint language traps (1.18)
 

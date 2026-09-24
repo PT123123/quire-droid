@@ -26,10 +26,13 @@ use crate::core::database_view::{
     ViewDefinition, ViewRules, ViewTab, WIDTH_AUTO, WIDTH_MIN, WIDTH_UNIT,
 };
 use crate::core::database_template;
+use crate::core::organizer::{
+    ListId, Note, NoteId, OrganizerCatalog, Priority, Repeat, Subtask, Task, TaskId, TaskList,
+};
 use crate::core::persistence::{Change, Repository};
 use crate::core::{
     Attachment, AttachmentId, Block, BlockId, BlockKind, ColorKind, Command, Document, History, Lang,
-    Mark, OrderKey, PageFont, Page, PageId,
+    Mark, OrderKey, PageFont, Page, PageId, ORGANIZER_STACK,
 };
 use crate::services::find_service::FindSession;
 use crate::services::persistence::PersistenceService;
@@ -37,7 +40,7 @@ use crate::services::search_service::SearchService;
 use crate::storage::search_index::SearchRequest;
 use crate::storage::SqliteRepository;
 use crate::storage::versions;
-use crate::{BacklinkRow, BlockRow, ColumnBox, ColumnItem, CommandRow, DbCell, DbColumn, DbOption, DbRow, DbViewTab, DiffRow, MenuRow, SearchRow, SidebarNode, SlashRow, TableCell, TextRun, TocEntry, VersionRow};
+use crate::{BacklinkRow, BlockRow, ColumnBox, ColumnItem, CommandRow, DbCell, DbColumn, DbOption, DbRow, DbViewTab, DiffRow, MenuRow, NoteRow, SearchRow, SidebarNode, SlashRow, SubtaskRow, TableCell, TaskListRow, TaskRow, TextRun, TocEntry, VersionRow};
 use slint::{Model, ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -252,6 +255,38 @@ pub struct AppState {
     next_property_id: Cell<u64>,
     next_record_id: Cell<u64>,
     next_view_id: Cell<u64>,
+
+    // ─── SPEC §四十一 Notes & tasks (the organizer) ──────────────────────────
+    /// Notes, tasks and task lists — the whole catalog, loaded once at startup
+    /// and folded on every write, the way `databases` holds the schema.
+    ///
+    /// **Whole, unlike the database layer.** §三十九's records are windowed
+    /// (ADR-0067) because a database may hold 10 000 rows and a view shows
+    /// thirty; the organizer is what a person typed — a few hundred rows — and
+    /// every "view" of it (inbox / today / one list) is a projection of the
+    /// whole set. Keeping it whole is what lets the projections be ordinary
+    /// Rust: no SQL for "due today", and therefore no second definition of
+    /// *today* living in the store.
+    organizer: RefCell<OrganizerCatalog>,
+    /// The organizer's undo stack key is the constant `core::ORGANIZER_STACK`
+    /// rather than a field here: the area's steps must not share the open page's
+    /// stack, or a Ctrl+Z inside the area would reach back into the document —
+    /// and a `PageId` no page can hold (`u64::MAX`) is the whole of that
+    /// separation, since `History` is keyed by `PageId`.
+    ///
+    /// The three watermarks (ADR-0072's rule, seeded from `MAX(id)`).
+    /// `next_task_id` also feeds subtask ids: a subtask's id is scoped to its
+    /// task and the two are never cross-referenced, so one counter is one thing
+    /// to seed (`core::organizer::Subtask`).
+    next_note_id: Cell<u64>,
+    next_task_id: Cell<u64>,
+    next_list_id: Cell<u64>,
+    /// The three projected models. `Rc<VecModel>` because Slint reads them per
+    /// frame and a rebuild must update the delegate's list without rebuilding
+    /// the window (the same shape `db_windows`' rows have).
+    note_rows: Rc<VecModel<NoteRow>>,
+    task_rows: Rc<VecModel<TaskRow>>,
+    task_list_rows: Rc<VecModel<TaskListRow>>,
 }
 
 /// One decoded picture plus what it costs to keep it decoded.
@@ -752,6 +787,31 @@ impl AppState {
             },
             None => (DatabaseCatalog::default(), (1, 1, 1, 1), None),
         };
+        // SPEC §四十一's catalog and its three watermarks, on the same terms as
+        // the database layer's above: loaded whole at startup (there is nothing
+        // to window), seeded from `MAX(id)`, and a read failure degrades to an
+        // empty area plus one notice line rather than a session that will not
+        // start. An organizer that cannot be read is an area that draws nothing,
+        // which is recoverable; a library that does not open is not.
+        let (organizer, org_ids, org_notice_read) = match &repo_for_state {
+            Some(repo) => match repo.load_organizer() {
+                Ok(catalog) => {
+                    let maximum = |table| repo.max_id(table).unwrap_or(0);
+                    let ids = (
+                        maximum(crate::storage::database_store::DbTable::Notes) + 1,
+                        maximum(crate::storage::database_store::DbTable::Tasks) + 1,
+                        maximum(crate::storage::database_store::DbTable::TaskLists) + 1,
+                    );
+                    (catalog, ids, None)
+                }
+                Err(e) => (
+                    OrganizerCatalog::default(),
+                    (1, 1, 1),
+                    Some(format!("笔记与任务无法读取：{e}")),
+                ),
+            },
+            None => (OrganizerCatalog::default(), (1, 1, 1), None),
+        };
         let blocks = Rc::new(VecModel::from(Vec::new()));
         let commands = Rc::new(VecModel::from(all_commands.clone()));
         // The named versions this library already carries (SPEC §三十八). Read
@@ -780,6 +840,7 @@ impl AppState {
                     .into_iter()
                     .chain(attachment_notice)
                     .chain(db_notice_read)
+                    .chain(org_notice_read)
                     .collect(),
             ),
             all_commands,
@@ -825,6 +886,13 @@ impl AppState {
             next_property_id: Cell::new(db_ids.1),
             next_record_id: Cell::new(db_ids.2),
             next_view_id: Cell::new(db_ids.3),
+            organizer: RefCell::new(organizer),
+            next_note_id: Cell::new(org_ids.0),
+            next_task_id: Cell::new(org_ids.1),
+            next_list_id: Cell::new(org_ids.2),
+            note_rows: Rc::new(VecModel::from(Vec::new())),
+            task_rows: Rc::new(VecModel::from(Vec::new())),
+            task_list_rows: Rc::new(VecModel::from(Vec::new())),
         };
         // restore persisted recents before the first open marks its page
         let state = Rc::new(state);
@@ -1387,6 +1455,12 @@ impl AppState {
         // as `DatabaseCreated` + `PropertyAdded` + `ViewAdded`, its undo as the
         // three deletions, and no call site has to remember to say so.
         self.db_absorb(&changes);
+        // …and SPEC §四十一's catalog is learned the same way, for the same
+        // reason: `exec_org` and `undo_org`/`redo_org` all hand their change
+        // list back here, and folding it in one place is what keeps the area's
+        // in-memory rows from drifting from the file — including when the
+        // changes were planned by a *merge* rather than by a click.
+        self.org_absorb(&changes);
         // …and the window cache's content half is spent with it (see
         // `db_content_stamp`): whatever the change was, what a database cell
         // paints may have moved, and no other part of the cache key can see it.
@@ -6623,6 +6697,642 @@ impl AppState {
         }
     }
 
+    // ─── SPEC §四十一 Notes & tasks (the organizer) ───────────────────────────
+    //
+    // The area's whole Rust surface. Five things are worth knowing before
+    // reading it:
+    //
+    // * **One funnel.** `exec_org` plans through `core::command::exec` on the
+    //   area's own stack (`core::ORGANIZER_STACK`, a `PageId` no page can hold),
+    //   then `record`s the changes — which folds them into `self.organizer`
+    //   through `org_absorb`. Undo and redo are the same three steps backwards,
+    //   so a Ctrl+Z in this area can never reach a document step and vice versa.
+    // * **The projections are derived, never stored.** The smart views ("收集箱",
+    //   "今天", "最近 7 天", "全部", "已完成") are predicates over the catalog, and
+    //   a stored list is a filter on `task.list`. Which one is showing is session
+    //   state in `UIState` (ADR-0073's rule: how the user is looking is a fact
+    //   about the window, not about a document), which is why `rebuild_organizer`
+    //   reads the UI rather than a field.
+    // * **Instants are stamped here.** `created`/`edited` are unix seconds
+    //   written as the row is built, so the instant rides in the `Change` and an
+    //   undo restores the same one rather than inventing a new birthday.
+    // * **A row that did not move is not a step.** Every edit goes through
+    //   `org_edit_*`, which returns `None` when the edit changed nothing — and a
+    //   commit that changed nothing must not restamp `edited`, or "blur without
+    //   typing" would leave the row newer than the edit that made it.
+    // * **Ids come from the three watermarks**, seeded at startup (ADR-0072).
+    //   A subtask draws on the *task* counter: its id is scoped to its task and
+    //   the two are never cross-referenced.
+
+    /// Fold an organizer change list into the in-memory catalog. The one reader
+    /// of these nine variants, and deliberately the same shape `db_absorb` has:
+    /// `*Added` upserts (a redo arrives as an add), `*Updated` replaces the row
+    /// whole, `*Deleted` removes it. Idempotent by construction, which is what
+    /// lets undo, redo and a merge all arrive through here.
+    fn org_absorb(&self, changes: &[Change]) {
+        let mut catalog = self.organizer.borrow_mut();
+        for change in changes {
+            match change {
+                Change::NoteAdded(note) => {
+                    if catalog.note(note.id).is_none() {
+                        catalog.notes.push(note.clone());
+                    }
+                }
+                Change::NoteUpdated(note) => {
+                    if let Some(row) = catalog.notes.iter_mut().find(|n| n.id == note.id) {
+                        *row = note.clone();
+                    }
+                }
+                Change::NoteDeleted { id } => catalog.notes.retain(|n| n.id != *id),
+                Change::TaskListAdded(list) => {
+                    if catalog.list(list.id).is_none() {
+                        catalog.lists.push(list.clone());
+                    }
+                }
+                Change::TaskListUpdated(list) => {
+                    if let Some(row) = catalog.lists.iter_mut().find(|l| l.id == list.id) {
+                        *row = list.clone();
+                    }
+                }
+                // The list goes and its tasks stay, pointing at an id nothing
+                // holds any more — which is why the *read* side folds a missing
+                // list to the inbox (see `org_list_of`). The command that deletes
+                // a list moves its tasks in the same batch, so this is the
+                // half-arrived case: a merge that landed a list's deletion while
+                // a task naming it stayed local (the two rows merge separately).
+                Change::TaskListDeleted { id } => catalog.lists.retain(|l| l.id != *id),
+                Change::TaskAdded(task) => {
+                    if catalog.task(task.id).is_none() {
+                        catalog.tasks.push(task.clone());
+                    }
+                }
+                Change::TaskUpdated(task) => {
+                    if let Some(row) = catalog.tasks.iter_mut().find(|t| t.id == task.id) {
+                        *row = task.clone();
+                    }
+                }
+                Change::TaskDeleted { id } => catalog.tasks.retain(|t| t.id != *id),
+                // Everything else belongs to the block tree, the pages, the
+                // settings or §三十九's layer, none of which this catalog holds.
+                _ => {}
+            }
+        }
+    }
+
+    /// Plan, apply and record one organizer command on the area's stack.
+    /// `None` is the plan's own refusal (a no-op edit, a row that is not there).
+    fn exec_org(&self, cmd: Command) -> Option<Vec<Change>> {
+        let changes = crate::core::command::exec(
+            &mut self.doc.borrow_mut(),
+            &mut self.history.borrow_mut(),
+            ORGANIZER_STACK,
+            cmd,
+        )?;
+        self.record(changes.clone());
+        Some(changes)
+    }
+
+    pub fn undo_org(&self) -> Option<Vec<Change>> {
+        let applied = crate::core::undo(
+            &mut self.doc.borrow_mut(),
+            &mut self.history.borrow_mut(),
+            ORGANIZER_STACK,
+        )?;
+        self.record(applied.clone());
+        Some(applied)
+    }
+
+    pub fn redo_org(&self) -> Option<Vec<Change>> {
+        let applied = crate::core::redo(
+            &mut self.doc.borrow_mut(),
+            &mut self.history.borrow_mut(),
+            ORGANIZER_STACK,
+        )?;
+        self.record(applied.clone());
+        Some(applied)
+    }
+
+    // ---- models ----
+
+    pub fn note_rows_model(&self) -> ModelRc<NoteRow> {
+        ModelRc::from(self.note_rows.clone())
+    }
+    pub fn task_rows_model(&self) -> ModelRc<TaskRow> {
+        ModelRc::from(self.task_rows.clone())
+    }
+    pub fn task_list_rows_model(&self) -> ModelRc<TaskListRow> {
+        ModelRc::from(self.task_list_rows.clone())
+    }
+
+    /// A copy of the area's whole catalog. For the two callers that are not the
+    /// projections: the scene seeder (which needs a row's id a moment after it
+    /// made one) and the tests.
+    pub fn organizer(&self) -> OrganizerCatalog {
+        self.organizer.borrow().clone()
+    }
+
+    // ---- projections ----
+
+    /// Rebuild the area's three models from the catalog and the filters the UI
+    /// is holding, and push them (with the two detail rows) into the window.
+    ///
+    /// One function rather than one per list because the three agree about
+    /// things a caller would otherwise have to pass in twice: which day it is
+    /// ("今天" and a row's badge must not straddle midnight), which list is
+    /// hidden behind a collapsed… there is no collapsing, but the *selection*
+    /// decides two of the outputs as well, and a rebuild that updated the list
+    /// and not the detail would show a row that is no longer there.
+    pub fn rebuild_organizer(&self) {
+        let ui = self.ui.borrow().clone().and_then(|u| u.upgrade());
+        let (view, list, query, sort) = match &ui {
+            Some(g) => (
+                g.get_org_view(),
+                g.get_org_list(),
+                g.get_org_query().to_string(),
+                g.get_org_sort(),
+            ),
+            None => (SMART_ALL, -1, String::new(), 0),
+        };
+        let (note_id, task_id) = match &ui {
+            Some(g) => (g.get_org_selected_note(), g.get_org_selected_task()),
+            None => (-1, -1),
+        };
+        let dates = OrgDates::now();
+        self.note_rows
+            .set_vec(self.org_notes(&query, note_id as i64));
+        self.task_rows
+            .set_vec(self.org_tasks(view, list as i64, &query, sort, &dates, task_id as i64));
+        self.task_list_rows.set_vec(self.org_lists(view, list as i64));
+        if let Some(g) = ui {
+            g.set_note_rows(self.note_rows_model());
+            g.set_task_rows(self.task_rows_model());
+            g.set_task_list_rows(self.task_list_rows_model());
+            g.set_org_note_detail(self.org_note_detail(note_id as i64));
+            g.set_org_task_detail(self.org_task_detail(task_id as i64, &dates));
+        }
+    }
+
+    /// One note as its row. `excerpt` is the body's first non-empty line, which
+    /// is what a list of notes is read by; the delegate elides it.
+    fn org_note_row(note: &Note, selected: bool) -> NoteRow {
+        let excerpt = note
+            .body
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        NoteRow {
+            id: note.id.0 as i32,
+            title: note.title.clone().into(),
+            body: note.body.clone().into(),
+            excerpt: excerpt.into(),
+            pinned: note.pinned,
+            tags: tags_text(&note.tags).into(),
+            when: org_when(note.edited).into(),
+            selected,
+        }
+    }
+
+    fn org_notes(&self, query: &str, selected: i64) -> Vec<NoteRow> {
+        let needle = query.trim().to_lowercase();
+        let catalog = self.organizer.borrow();
+        let mut notes: Vec<&Note> = catalog
+            .notes
+            .iter()
+            .filter(|n| org_note_matches(n, &needle))
+            .collect();
+        // Pinned first, then most recently edited: the order a quick-note list
+        // is read in, and the one every note app opens on.
+        notes.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.edited.cmp(&a.edited))
+                .then(b.id.cmp(&a.id))
+        });
+        notes
+            .into_iter()
+            .map(|n| Self::org_note_row(n, n.id.0 as i64 == selected))
+            .collect()
+    }
+
+    fn org_note_detail(&self, selected: i64) -> NoteRow {
+        let catalog = self.organizer.borrow();
+        match catalog.note(NoteId(selected.max(0) as u64)) {
+            Some(note) => Self::org_note_row(note, true),
+            None => NoteRow {
+                id: -1,
+                ..NoteRow::default()
+            },
+        }
+    }
+
+    /// The chip row: the inbox first, then the stored lists in their own order.
+    ///
+    /// The inbox's chip is the *view* half of the selector, which is why it is
+    /// built here rather than stored: `ListId(0)` is a sentinel with no row
+    /// (`core::organizer`), so a chip for it could only ever be a projection —
+    /// and building it beside the lists is what keeps "which chip is lit" one
+    /// comparison instead of a special case in the delegate.
+    fn org_lists(&self, view: i32, list: i64) -> Vec<TaskListRow> {
+        let catalog = self.organizer.borrow();
+        let mut rows = vec![TaskListRow {
+            id: -1,
+            name: "收集箱".into(),
+            color: ColorKind::Default.slot(),
+            // The inbox's count is every task that *reads* as the inbox's, which
+            // includes a task whose list a merge left dangling — the same fold
+            // `org_list_of` makes for one row.
+            count: catalog
+                .tasks
+                .iter()
+                .filter(|t| catalog.list(t.list).is_none())
+                .count() as i32,
+            selected: list < 0 && view == SMART_INBOX,
+            smart: true,
+        }];
+        let mut lists: Vec<&TaskList> = catalog.lists.iter().collect();
+        lists.sort_by_key(|l| l.ord);
+        for l in lists {
+            rows.push(TaskListRow {
+                id: l.id.0 as i32,
+                name: l.name.clone().into(),
+                color: l.color.slot(),
+                count: catalog.tasks_in(l.id).count() as i32,
+                selected: list >= 0 && l.id.0 as i64 == list,
+                smart: false,
+            });
+        }
+        rows
+    }
+
+    fn org_tasks(
+        &self,
+        view: i32,
+        list: i64,
+        query: &str,
+        sort: i32,
+        dates: &OrgDates,
+        selected: i64,
+    ) -> Vec<TaskRow> {
+        let needle = query.trim().to_lowercase();
+        let catalog = self.organizer.borrow();
+        let mut tasks: Vec<&Task> = catalog
+            .tasks
+            .iter()
+            .filter(|t| {
+                // One selector with two halves: a stored list id, or a smart
+                // view slot (`org-list` < 0 means "the chip decides").
+                let bucket = match list {
+                    l if l >= 0 => t.list.0 as i64 == l,
+                    _ => org_in_smart_view(&catalog, t, view, dates),
+                };
+                bucket && org_task_matches(t, &needle)
+            })
+            .collect();
+        match sort {
+            SORT_PRIORITY => tasks.sort_by(|a, b| {
+                b.priority
+                    .slot()
+                    .cmp(&a.priority.slot())
+                    .then(a.due.cmp(&b.due))
+                    .then(a.ord.cmp(&b.ord))
+            }),
+            SORT_DUE => tasks.sort_by(|a, b| {
+                a.due
+                    .is_none()
+                    .cmp(&b.due.is_none())
+                    .then(a.due.cmp(&b.due))
+                    .then(a.ord.cmp(&b.ord))
+            }),
+            // Any other slot — including 0, the default — is the order they
+            // were added: `ord` is this area's own reading order, and the two
+            // sorts above are questions asked *of* it rather than replacements
+            // for it.
+            _ => tasks.sort_by_key(|t| (t.list, t.ord)),
+        }
+        tasks
+            .into_iter()
+            .map(|t| org_task_row(&catalog, t, dates, t.id.0 as i64 == selected))
+            .collect()
+    }
+
+    fn org_task_detail(&self, selected: i64, dates: &OrgDates) -> TaskRow {
+        let catalog = self.organizer.borrow();
+        match catalog.task(TaskId(selected.max(0) as u64)).cloned() {
+            Some(task) => org_task_row(&catalog, &task, dates, true),
+            None => TaskRow {
+                id: -1,
+                ..TaskRow::default()
+            },
+        }
+    }
+
+    // ---- writes ----
+    //
+    // Every one of these reads the row's current value out of the catalog and
+    // hands it over as the command's `before` (the plan has no store to read).
+    // The `org_edit_*` pair is where "a row that did not move is not a step"
+    // lives: an edit that changes nothing returns `None` and leaves `edited`
+    // where it was.
+
+    fn org_edit_note(&self, id: i64, edit: impl FnOnce(&mut Note)) -> Option<Vec<Change>> {
+        let before = self.organizer.borrow().note(NoteId(id.max(0) as u64))?.clone();
+        let mut after = before.clone();
+        edit(&mut after);
+        if after == before {
+            return None;
+        }
+        after.edited = now_secs();
+        self.exec_org(Command::UpdateNote {
+            id: NoteId(id.max(0) as u64),
+            before,
+            after,
+        })
+    }
+
+    fn org_edit_task(&self, id: i64, edit: impl FnOnce(&mut Task)) -> Option<Vec<Change>> {
+        let before = self.organizer.borrow().task(TaskId(id.max(0) as u64))?.clone();
+        let mut after = before.clone();
+        edit(&mut after);
+        if after == before {
+            return None;
+        }
+        after.edited = now_secs();
+        self.exec_org(Command::UpdateTask {
+            id: TaskId(id.max(0) as u64),
+            before,
+            after,
+        })
+    }
+
+    fn org_edit_list(&self, id: i64, edit: impl FnOnce(&mut TaskList)) -> Option<Vec<Change>> {
+        let before = self.organizer.borrow().list(ListId(id.max(0) as u64))?.clone();
+        let mut after = before.clone();
+        edit(&mut after);
+        if after == before {
+            return None;
+        }
+        self.exec_org(Command::UpdateTaskList {
+            id: ListId(id.max(0) as u64),
+            before,
+            after,
+        })
+    }
+
+    /// A new, empty note — the one thing the area never asks the user for. The
+    /// id and both instants are stamped here, which is what makes the undo of
+    /// "new note" restore *this* note rather than a copy of it.
+    pub fn org_create_note(&self) -> Option<i64> {
+        let id = self.next_note_id.get();
+        let now = now_secs();
+        self.exec_org(Command::CreateNote {
+            note: Note {
+                id: NoteId(id),
+                title: String::new(),
+                body: String::new(),
+                pinned: false,
+                tags: Vec::new(),
+                created: now,
+                edited: now,
+            },
+        })?;
+        self.next_note_id.set(id + 1);
+        Some(id as i64)
+    }
+
+    pub fn org_note_title(&self, id: i64, title: String) -> Option<Vec<Change>> {
+        self.org_edit_note(id, |n| n.title = title)
+    }
+
+    pub fn org_note_body(&self, id: i64, body: String) -> Option<Vec<Change>> {
+        self.org_edit_note(id, |n| n.body = body)
+    }
+
+    pub fn org_note_pinned(&self, id: i64, pinned: bool) -> Option<Vec<Change>> {
+        self.org_edit_note(id, |n| n.pinned = pinned)
+    }
+
+    pub fn org_note_tags(&self, id: i64, tags: String) -> Option<Vec<Change>> {
+        let tags = parse_tags(&tags);
+        self.org_edit_note(id, |n| n.tags = tags)
+    }
+
+    /// Delete a note. One step, undone by the area's Ctrl+Z: the command carries
+    /// the whole row, so the revert can write back its title, body, pin and
+    /// tags — and the caller says so out loud in the notice band rather than
+    /// leaving a delete with no visible way back.
+    pub fn org_delete_note(&self, id: i64) -> Option<String> {
+        let note = self.organizer.borrow().note(NoteId(id.max(0) as u64))?.clone();
+        let title = if note.title.trim().is_empty() {
+            "无标题".to_string()
+        } else {
+            note.title.clone()
+        };
+        self.exec_org(Command::DeleteNote { note })?;
+        Some(title)
+    }
+
+    pub fn org_create_task(&self, list: i64) -> Option<i64> {
+        let id = self.next_task_id.get();
+        let now = now_secs();
+        // Append to its list: the order key after the last task already there,
+        // which is the same "one key after the end" rule the sidebar uses.
+        let last = self
+            .organizer
+            .borrow()
+            .tasks_in(if list >= 0 { ListId(list as u64) } else { ListId::INBOX })
+            .map(|t| t.ord)
+            .max();
+        let ord = OrderKey::between(last, None)?;
+        self.exec_org(Command::CreateTask {
+            task: Task {
+                id: TaskId(id),
+                list: if list >= 0 { ListId(list as u64) } else { ListId::INBOX },
+                title: String::new(),
+                notes: String::new(),
+                priority: Priority::None,
+                due: None,
+                repeat: Repeat::None,
+                done: false,
+                completed_at: None,
+                tags: Vec::new(),
+                subtasks: Vec::new(),
+                created: now,
+                edited: now,
+                ord,
+            },
+        })?;
+        self.next_task_id.set(id + 1);
+        Some(id as i64)
+    }
+
+    pub fn org_task_title(&self, id: i64, title: String) -> Option<Vec<Change>> {
+        self.org_edit_task(id, |t| t.title = title)
+    }
+
+    pub fn org_task_notes(&self, id: i64, notes: String) -> Option<Vec<Change>> {
+        self.org_edit_task(id, |t| t.notes = notes)
+    }
+
+    /// Tick a task. `completed_at` moves with the flag and is cleared on untick,
+    /// so the two can never disagree about the same fact.
+    pub fn org_task_done(&self, id: i64, done: bool) -> Option<Vec<Change>> {
+        let now = now_secs();
+        self.org_edit_task(id, |t| {
+            t.done = done;
+            t.completed_at = done.then_some(now);
+        })
+    }
+
+    pub fn org_task_priority(&self, id: i64, slot: i32) -> Option<Vec<Change>> {
+        let priority = Priority::from_slot(slot);
+        self.org_edit_task(id, |t| t.priority = priority)
+    }
+
+    /// A deadline as the date input hands it over: ISO, or empty for none. The
+    /// shape is `core::date`'s one format and it is checked here — a picker that
+    /// wrote anything else would put a string in the column that no comparison
+    /// (`org_in_smart_view`, the row's own badge) could make sense of.
+    pub fn org_task_due(&self, id: i64, due: String) -> Option<Vec<Change>> {
+        let due = due.trim().to_string();
+        let due = if due.is_empty() {
+            None
+        } else if crate::core::is_iso_date(&due) {
+            Some(due)
+        } else {
+            return None;
+        };
+        self.org_edit_task(id, |t| t.due = due.clone())
+    }
+
+    pub fn org_task_repeat(&self, id: i64, slot: i32) -> Option<Vec<Change>> {
+        let repeat = Repeat::from_slot(slot);
+        self.org_edit_task(id, |t| t.repeat = repeat)
+    }
+
+    pub fn org_task_tags(&self, id: i64, tags: String) -> Option<Vec<Change>> {
+        let tags = parse_tags(&tags);
+        self.org_edit_task(id, |t| t.tags = tags)
+    }
+
+    /// Move a task to another list (`-1` = the inbox). The same write
+    /// `DeleteTaskList` plans for the tasks it rescues, which is why it is one
+    /// `TaskUpdated` and needs no command of its own.
+    pub fn org_task_list(&self, id: i64, list: i64) -> Option<Vec<Change>> {
+        let list = if list >= 0 { ListId(list as u64) } else { ListId::INBOX };
+        self.org_edit_task(id, |t| t.list = list)
+    }
+
+    pub fn org_delete_task(&self, id: i64) -> Option<String> {
+        let task = self.organizer.borrow().task(TaskId(id.max(0) as u64))?.clone();
+        let title = if task.title.trim().is_empty() {
+            "无标题".to_string()
+        } else {
+            task.title.clone()
+        };
+        self.exec_org(Command::DeleteTask { task })?;
+        Some(title)
+    }
+
+    // ---- the checklist ----
+
+    pub fn org_subtask_add(&self, task: i64) -> Option<Vec<Change>> {
+        // The counter moves only if the push landed: `org_edit_task` refuses an
+        // edit that changed nothing (a task that is not there), and a refused
+        // edit must not spend an id.
+        let id = self.next_task_id.get();
+        let changes = self.org_edit_task(task, |t| {
+            t.subtasks.push(Subtask {
+                id,
+                title: String::new(),
+                done: false,
+            })
+        })?;
+        self.next_task_id.set(id + 1);
+        Some(changes)
+    }
+
+    pub fn org_subtask_title(&self, task: i64, id: i64, title: String) -> Option<Vec<Change>> {
+        self.org_edit_task(task, |t| {
+            if let Some(row) = t.subtasks.iter_mut().find(|s| s.id == id.max(0) as u64) {
+                row.title = title;
+            }
+        })
+    }
+
+    pub fn org_subtask_done(&self, task: i64, id: i64, done: bool) -> Option<Vec<Change>> {
+        self.org_edit_task(task, |t| {
+            if let Some(row) = t.subtasks.iter_mut().find(|s| s.id == id.max(0) as u64) {
+                row.done = done;
+            }
+        })
+    }
+
+    pub fn org_subtask_delete(&self, task: i64, id: i64) -> Option<Vec<Change>> {
+        self.org_edit_task(task, |t| t.subtasks.retain(|s| s.id != id.max(0) as u64))
+    }
+
+    // ---- lists ----
+
+    pub fn org_create_list(&self, name: String) -> Option<i64> {
+        let id = self.next_list_id.get();
+        let ord = OrderKey::between(
+            self.organizer.borrow().lists.iter().map(|l| l.ord).max(),
+            None,
+        )?;
+        let name = if name.trim().is_empty() {
+            "新建清单".to_string()
+        } else {
+            name
+        };
+        self.exec_org(Command::CreateTaskList {
+            list: TaskList {
+                id: ListId(id),
+                name,
+                // A new list takes the next colour of the closed palette rather
+                // than a random one: two lists in a row must not be the same
+                // colour, or the dots stop telling them apart.
+                color: ORG_LIST_COLORS[(id as usize) % ORG_LIST_COLORS.len()],
+                ord,
+            },
+        })?;
+        self.next_list_id.set(id + 1);
+        Some(id as i64)
+    }
+
+    pub fn org_list_name(&self, id: i64, name: String) -> Option<Vec<Change>> {
+        self.org_edit_list(id, |l| l.name = name)
+    }
+
+    pub fn org_list_color(&self, id: i64, slot: i32) -> Option<Vec<Change>> {
+        let color = ColorKind::from_slot(slot).unwrap_or(ColorKind::Default);
+        self.org_edit_list(id, |l| l.color = color)
+    }
+
+    /// Delete a list, and file its tasks in the inbox **in the same step** —
+    /// the one command that needed to exist separately from "delete a row"
+    /// (`Command::DeleteTaskList`). Returns how many tasks came along, which is
+    /// what the notice band says.
+    pub fn org_delete_list(&self, id: i64) -> Option<usize> {
+        let list = self.organizer.borrow().list(ListId(id.max(0) as u64))?.clone();
+        let now = now_secs();
+        let moved: Vec<(Task, Task)> = self
+            .organizer
+            .borrow()
+            .tasks_in(list.id)
+            .map(|t| {
+                let mut after = t.clone();
+                after.list = ListId::INBOX;
+                after.edited = now;
+                (t.clone(), after)
+            })
+            .collect();
+        let count = moved.len();
+        self.exec_org(Command::DeleteTaskList { list, moved })?;
+        Some(count)
+    }
+
     /// Recompute one block's window from its reported geometry, and re-read when
     /// the window moved. Returns `true` when the model changed (the caller then
     /// updates that one row).
@@ -11604,6 +12314,8 @@ fn block_search_blob(title: &str, blocks: &[BlockRow]) -> String {
 
 // ---- command palette ----
 
+/// The palette's own ids. `CMD_PAGE_BASE` and up is a page's id, which is why
+/// the area's two commands sit below it with the rest of the app's actions.
 const CMD_NEW_PAGE: i32 = 1;
 const CMD_SEARCH: i32 = 2;
 const CMD_TOGGLE_SIDEBAR: i32 = 3;
@@ -11619,6 +12331,11 @@ pub const CMD_COPY_MD: i32 = 11;
 /// Retrace / re-advance the session's page navigation (SPEC §十六).
 pub const CMD_NAV_BACK: i32 = 12;
 pub const CMD_NAV_FORWARD: i32 = 13;
+/// SPEC §四十一: the two commands that open the organizer's area, one per tab.
+/// Two rows and not one, because "my notes" and "my tasks" are two places a user
+/// goes from the keyboard (`Ctrl+K`, then the first two letters of either).
+pub const CMD_OPEN_NOTES: i32 = 14;
+pub const CMD_OPEN_TASKS: i32 = 15;
 /// Jump-to-page commands are 10 000 + page id.
 pub const CMD_PAGE_BASE: i32 = 10_000;
 
@@ -11645,6 +12362,8 @@ pub enum PaletteAction {
     CopyMarkdown,
     NavigateBack,
     NavigateForward,
+    /// SPEC §四十一's two places: 0 笔记, 1 任务.
+    OpenOrganizer(i32),
     OpenPage(i32),
     None,
 }
@@ -11664,6 +12383,8 @@ pub fn palette_action(id: i32) -> PaletteAction {
         CMD_COPY_MD => PaletteAction::CopyMarkdown,
         CMD_NAV_BACK => PaletteAction::NavigateBack,
         CMD_NAV_FORWARD => PaletteAction::NavigateForward,
+        CMD_OPEN_NOTES => PaletteAction::OpenOrganizer(0),
+        CMD_OPEN_TASKS => PaletteAction::OpenOrganizer(1),
         page if page >= CMD_PAGE_BASE => PaletteAction::OpenPage(page - CMD_PAGE_BASE),
         _ => PaletteAction::None,
     }
@@ -11697,6 +12418,11 @@ fn mock_commands(ws: &Workspace) -> Vec<CommandRow> {
         "moon",
     );
     cmd(CMD_SETTINGS, "设置", "", "导航", "settings");
+    // SPEC §四十一's two places, in the palette beside "搜索页面": a place the
+    // sidebar already has a row for is still a place the keyboard should reach in
+    // two keystrokes.
+    cmd(CMD_OPEN_NOTES, "打开笔记", "", "导航", "note");
+    cmd(CMD_OPEN_TASKS, "打开任务", "", "导航", "todo-check");
     cmd(CMD_RENAME_PAGE, "重命名页面", "F2", "页面", "pencil");
     cmd(CMD_DUPLICATE_PAGE, "复制页面", "", "页面", "copy");
     cmd(CMD_DELETE_PAGE, "删除页面", "", "页面", "trash");
@@ -11946,7 +12672,9 @@ impl AppState {
     /// and the database layer's schema from the in-memory catalog plus its
     /// records and cell values read straight out of the store.
     pub fn sync_export(&self) -> crate::services::sync::model::SyncSnapshot {
-        use crate::services::sync::model::{SAttachment, SBlock, SPage, SValue, SyncSnapshot};
+        use crate::services::sync::model::{
+            SAttachment, SBlock, SNote, SPage, STask, STaskList, SValue, SyncSnapshot,
+        };
         let mut snap = SyncSnapshot::default();
         let me = self.sync_self_info();
         snap.device_id = me.id;
@@ -12026,6 +12754,19 @@ impl AppState {
                 }
             }
         }
+
+        // SPEC §四十一's three collections, straight out of the in-memory
+        // catalog — which is the whole of the export for them: the organizer is
+        // loaded whole at startup and folded on every write, so unlike §三十九's
+        // records there is nothing here to read out of SQL. The shadow a peer
+        // syncs against is a stored snapshot, so it carries the same rows it
+        // always did.
+        {
+            let catalog = self.organizer.borrow();
+            snap.notes = catalog.notes.iter().map(SNote::from).collect();
+            snap.tasks = catalog.tasks.iter().map(STask::from).collect();
+            snap.lists = catalog.lists.iter().map(STaskList::from).collect();
+        }
         snap
     }
 
@@ -12085,6 +12826,28 @@ impl AppState {
             view_cell.set(v + 1);
             v
         };
+        // SPEC §四十一's three. Same shape as the seven above and drawn from the
+        // same watermarks the area's own creations use, so an id this merge hands
+        // out can never collide with a row the session mints a moment later
+        // (ADR-0072).
+        let note_cell = &self.next_note_id;
+        let task_cell = &self.next_task_id;
+        let list_cell = &self.next_list_id;
+        let mut next_note = || {
+            let v = note_cell.get();
+            note_cell.set(v + 1);
+            v
+        };
+        let mut next_task = || {
+            let v = task_cell.get();
+            task_cell.set(v + 1);
+            v
+        };
+        let mut next_list = || {
+            let v = list_cell.get();
+            list_cell.set(v + 1);
+            v
+        };
         let mut ctx = crate::services::sync::merge::MergeCtx {
             next_page: &mut next_page,
             next_block: &mut next_block,
@@ -12093,6 +12856,9 @@ impl AppState {
             next_property: &mut next_prop,
             next_record: &mut next_rec,
             next_view: &mut next_view,
+            next_note: &mut next_note,
+            next_task: &mut next_task,
+            next_list: &mut next_list,
         };
         let outcome = crate::services::sync::merge::merge(&local, shadow.as_ref(), remote, &peer_name, &mut ctx);
         let conflicts = outcome.conflicts.clone();
@@ -12498,6 +13264,88 @@ impl AppState {
             }
         }
 
+        // ---- SPEC §四十一: the organizer's three collections ----
+        //
+        // The rows are read back by hand, and the *deletion* is read off the
+        // difference between what this session holds and what the merge produced
+        // — the same shape the database half above uses, and the reason the
+        // snapshot version had to move to 2: a peer that answered a merged
+        // snapshot without these collections in it would look like a peer that
+        // deleted them, and a user's notes would go with it.
+        //
+        // One batch for all three, in dependency order: lists are created before
+        // the tasks that name them, and a list is deleted after the tasks that
+        // were in it have moved (which is the whole point of `DeleteTaskList`
+        // carrying `moved`). `record` folds the batch into `self.organizer`, so
+        // the projections below are reading the merged state.
+        {
+            use crate::services::sync::model::{SNote, STask, STaskList};
+
+            let mut batch: Vec<Change> = Vec::new();
+            let local_notes: Vec<Note> = self.organizer.borrow().notes.clone();
+            let local_tasks: Vec<Task> = self.organizer.borrow().tasks.clone();
+            let local_lists: Vec<TaskList> = self.organizer.borrow().lists.clone();
+
+            // Notes: a row the session does not know is new, one that differs is
+            // rewritten whole (the change's own shape), one that is gone was
+            // deleted on the other side over an unchanged local copy.
+            for wire in &merged.notes {
+                let row = wire.to_core();
+                match local_notes.iter().find(|n| n.id == row.id) {
+                    Some(cur) if *cur == row => {}
+                    Some(_) => batch.push(Change::NoteUpdated(row)),
+                    None => batch.push(Change::NoteAdded(row)),
+                }
+            }
+            let merged_note_ids: std::collections::HashSet<u64> =
+                merged.notes.iter().map(|n: &SNote| n.id).collect();
+            for row in &local_notes {
+                if !merged_note_ids.contains(&row.id.0) {
+                    batch.push(Change::NoteDeleted { id: row.id });
+                }
+            }
+
+            let merged_list_ids: std::collections::HashSet<u64> =
+                merged.lists.iter().map(|l: &STaskList| l.id).collect();
+            for wire in &merged.lists {
+                let row = wire.to_core();
+                match local_lists.iter().find(|l| l.id == row.id) {
+                    Some(cur) if *cur == row => {}
+                    Some(_) => batch.push(Change::TaskListUpdated(row)),
+                    None => batch.push(Change::TaskListAdded(row)),
+                }
+            }
+
+            for wire in &merged.tasks {
+                let row = wire.to_core();
+                match local_tasks.iter().find(|t| t.id == row.id) {
+                    Some(cur) if *cur == row => {}
+                    Some(_) => batch.push(Change::TaskUpdated(row)),
+                    None => batch.push(Change::TaskAdded(row)),
+                }
+            }
+            let merged_task_ids: std::collections::HashSet<u64> =
+                merged.tasks.iter().map(|t: &STask| t.id).collect();
+            for row in &local_tasks {
+                if !merged_task_ids.contains(&row.id.0) {
+                    batch.push(Change::TaskDeleted { id: row.id });
+                }
+            }
+
+            // Lists last on the way out: every task that named one has already
+            // been moved or updated by the loops above, so no instant of this
+            // batch shows a task in a list the batch has just taken away.
+            for row in &local_lists {
+                if !merged_list_ids.contains(&row.id.0) {
+                    batch.push(Change::TaskListDeleted { id: row.id });
+                }
+            }
+
+            if !batch.is_empty() {
+                self.record(batch);
+            }
+        }
+
         // the merged snapshot becomes *this* device's when it is pushed back:
         // the peer keys its shadow by the sender's identity, and the sender
         // of that push is us
@@ -12603,6 +13451,232 @@ fn sync_block_diff(
             db: mb.db_ref.map(crate::core::database::DatabaseId),
         });
     }
+}
+
+// ─── SPEC §四十一: the organizer's own vocabulary ─────────────────────────────
+//
+// Everything the area's projections share and nothing else uses. Free items
+// rather than methods on `AppState` because each one is a pure rule about a row
+// (what a tag list is, how a deadline paints, which view a task is in) — and
+// because the projections already hold the catalog's borrow while they build
+// rows, so a method that borrowed it again would panic.
+
+/// The organizer's smart views, in the order their chips are drawn: what the
+/// user is asking about, not which stored list a task happens to be in — that
+/// half is `org-list` (`-1` = "the chip decides").
+const SMART_INBOX: i32 = 0;
+const SMART_TODAY: i32 = 1;
+const SMART_WEEK: i32 = 2;
+const SMART_ALL: i32 = 3;
+const SMART_DONE: i32 = 4;
+
+/// The task toolbar's sorts. `0` is the default and the only one that is the
+/// area's own reading order; the other two are questions asked of it.
+const SORT_PRIORITY: i32 = 1;
+const SORT_DUE: i32 = 2;
+
+/// The colours a new list draws from — the document editor's own palette, minus
+/// `Default` (a dot with no colour is not a dot).
+const ORG_LIST_COLORS: [ColorKind; 6] = [
+    ColorKind::Blue,
+    ColorKind::Green,
+    ColorKind::Orange,
+    ColorKind::Purple,
+    ColorKind::Pink,
+    ColorKind::Yellow,
+];
+
+/// Today, tomorrow and the end of the next seven days, in the ISO strings the
+/// deadlines are stored as (`core::date`'s one format).
+///
+/// One clock read for all three, taken once per rebuild: the smart views and the
+/// row badges must agree about which day it is, and a rebuild that read the clock
+/// three times could straddle midnight and file a task under one day while
+/// painting it as another. ISO strings compare as dates precisely because the
+/// format is fixed-width, which is why these are strings and not day numbers.
+struct OrgDates {
+    today: String,
+    tomorrow: String,
+    week: String,
+}
+
+impl OrgDates {
+    fn now() -> Self {
+        let days = now_secs().div_euclid(86_400);
+        OrgDates {
+            today: crate::core::date::to_iso(days),
+            tomorrow: crate::core::date::to_iso(days + 1),
+            week: crate::core::date::to_iso(days + 7),
+        }
+    }
+}
+
+/// Whether a task belongs to one of the five smart views.
+///
+/// The catalog is here for one thing: the inbox. A task is in the inbox when its
+/// `list` names no stored list — which is `0` by construction, and also the id a
+/// merge leaves behind when it lands a list's deletion while a task that pointed
+/// at it stays local (`org_absorb`). One comparison answers both, and neither
+/// task is lost.
+fn org_in_smart_view(
+    catalog: &OrganizerCatalog,
+    task: &Task,
+    view: i32,
+    dates: &OrgDates,
+) -> bool {
+    let due = task.due.as_deref();
+    match view {
+        SMART_INBOX => catalog.list(task.list).is_none(),
+        SMART_TODAY => !task.done && due == Some(dates.today.as_str()),
+        SMART_WEEK => {
+            !task.done
+                && matches!(due, Some(d) if d > dates.today.as_str() && d <= dates.week.as_str())
+        }
+        SMART_DONE => task.done,
+        // SMART_ALL, and any slot a future build writes: everything. A view this
+        // build does not know must show the rows rather than none of them.
+        _ => true,
+    }
+}
+
+/// One task as its row. A free function taking the catalog rather than a method
+/// on `AppState`, because its caller is already holding the catalog's borrow —
+/// and a method that borrowed it a second time would panic on the same `RefCell`
+/// (`org_tasks` builds a whole list of these).
+fn org_task_row(
+    catalog: &OrganizerCatalog,
+    task: &Task,
+    dates: &OrgDates,
+    selected: bool,
+) -> TaskRow {
+    // The row's list, folded the way `org_in_smart_view` folds the inbox: a task
+    // whose list is gone files under 收集箱 rather than disappearing from every
+    // view, because it is still in the file and the user can still move it.
+    let (list_name, list_color) = match catalog.list(task.list) {
+        Some(list) => (list.name.clone(), list.color.slot()),
+        None => ("收集箱".to_string(), ColorKind::Default.slot()),
+    };
+    TaskRow {
+        id: task.id.0 as i32,
+        title: task.title.clone().into(),
+        done: task.done,
+        priority: task.priority.slot(),
+        due: task.due.clone().unwrap_or_default().into(),
+        due_label: org_due_label(task.due.as_deref(), dates).into(),
+        // The badge is a *state*, not part of the date's label: an overdue task
+        // still has to say which day it was due (`org_due_label`).
+        overdue: !task.done && org_overdue(task.due.as_deref(), dates),
+        list: task.list.0 as i32,
+        list_name: list_name.into(),
+        list_color,
+        tags: tags_text(&task.tags).into(),
+        notes: task.notes.clone().into(),
+        repeat: task.repeat.slot(),
+        subtasks: ModelRc::from(Rc::new(VecModel::from(
+            task.subtasks
+                .iter()
+                .map(|s| SubtaskRow {
+                    id: s.id as i32,
+                    title: s.title.clone().into(),
+                    done: s.done,
+                })
+                .collect::<Vec<_>>(),
+        ))),
+        subtasks_done: task.subtasks.iter().filter(|s| s.done).count() as i32,
+        subtasks_total: task.subtasks.len() as i32,
+        when: org_when(task.edited).into(),
+        selected,
+    }
+}
+
+fn org_note_matches(note: &Note, needle: &str) -> bool {
+    needle.is_empty()
+        || note.title.to_lowercase().contains(needle)
+        || note.body.to_lowercase().contains(needle)
+        || note.tags.iter().any(|t| t.to_lowercase().contains(needle))
+}
+
+fn org_task_matches(task: &Task, needle: &str) -> bool {
+    needle.is_empty()
+        || task.title.to_lowercase().contains(needle)
+        || task.notes.to_lowercase().contains(needle)
+        || task.tags.iter().any(|t| t.to_lowercase().contains(needle))
+        || task
+            .subtasks
+            .iter()
+            .any(|s| s.title.to_lowercase().contains(needle))
+}
+
+/// A deadline as the row paints it. Short and relative where that is what the
+/// user means ("今天"), the stored date where it is not — and 逾期 is the *badge*,
+/// not a string, so an overdue task still says which day it was due.
+fn org_due_label(due: Option<&str>, dates: &OrgDates) -> String {
+    let Some(due) = due else {
+        return String::new();
+    };
+    if due == dates.today {
+        return "今天".into();
+    }
+    if due == dates.tomorrow {
+        return "明天".into();
+    }
+    // Same year: the year is noise. Another year: it is the whole point.
+    if due.get(..4) == dates.today.get(..4) {
+        due.get(5..).unwrap_or(due).to_string()
+    } else {
+        due.to_string()
+    }
+}
+
+fn org_overdue(due: Option<&str>, dates: &OrgDates) -> bool {
+    matches!(due, Some(d) if d < dates.today.as_str())
+}
+
+/// How long ago something happened, in the coarsest unit that still says
+/// something (`core::diff::age_text`'s idea, in the language this app's UI
+/// speaks). Ages and not clock times for the reason that function gives: a time
+/// would be either UTC, which is wrong to the reader, or a zone conversion
+/// nothing in this app keeps.
+fn org_when(secs: i64) -> String {
+    let age = now_secs() - secs;
+    if age < 60 {
+        "刚刚".into()
+    } else if age < 3_600 {
+        format!("{} 分钟前", age / 60)
+    } else if age < 86_400 {
+        format!("{} 小时前", age / 3_600)
+    } else if age < 86_400 * 30 {
+        format!("{} 天前", age / 86_400)
+    } else {
+        crate::core::date::to_iso(secs.div_euclid(86_400))
+    }
+}
+
+/// A comma-separated tag input as the list a row stores: trimmed, empties
+/// dropped, duplicates dropped in first-seen order. One place decides what the
+/// input means, so the row a typed string produces and the string it renders
+/// back cannot disagree.
+///
+/// The separators are the ones a Chinese or English keyboard produces for "a
+/// list of things" — the two commas and the enumeration mark. **Not** a space: a
+/// tag is allowed to have one ("project atlas"), and splitting on spaces would
+/// file it as two tags nobody can find again.
+fn parse_tags(input: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in input.split([',', '，', '、', '\n', '\t']) {
+        let tag = tag.trim();
+        if tag.is_empty() || out.iter().any(|t| t == tag) {
+            continue;
+        }
+        out.push(tag.to_string());
+    }
+    out
+}
+
+/// The same list as its editable form — `parse_tags`'s inverse for the input's
+/// initial value.
+fn tags_text(tags: &[String]) -> String {
+    tags.join(", ")
 }
 
 #[cfg(test)]
@@ -13942,9 +15016,13 @@ mod tests {
             palette_action(CMD_PAGE_BASE + 42),
             PaletteAction::OpenPage(42)
         );
-        // nothing between the command block and the page block, and nothing
+        // SPEC §四十一's two rows, at the end of the command block and below the
+        // page ids: a place the palette can open is still not a page.
+        assert_eq!(palette_action(14), PaletteAction::OpenOrganizer(0));
+        assert_eq!(palette_action(15), PaletteAction::OpenOrganizer(1));
+        // nothing past the command block and before the page block, and nothing
         // the palette could invent, may reach a handler
-        for id in [0, 14, 9_999, -1] {
+        for id in [0, 16, 9_999, -1] {
             assert_eq!(palette_action(id), PaletteAction::None, "id {id}");
         }
     }
@@ -18250,5 +19328,336 @@ mod tests {
         let past_the_end = crate::core::database_view::FILTER_OPS.len() + 1;
         assert!(!state.db_filter_set_op(block, 0, past_the_end));
         assert!(!state.db_filter_set_op(block, 7, FilterOp::Gt.index()));
+    }
+
+    // ─── SPEC §四十一: the organizer through a real session ──────────────────
+    //
+    // The commands, the catalog fold and the file, together. `AppState::new` with
+    // an in-memory repository is the same session the app builds, minus the
+    // window — which is the point: nothing here reaches into the area's insides,
+    // it types things and then asks where they went.
+
+    fn org_session() -> (
+        std::rc::Rc<super::AppState>,
+        std::sync::Arc<crate::storage::SqliteRepository>,
+    ) {
+        use super::{AppState, HandleArgs};
+        let repo = std::sync::Arc::new(crate::storage::SqliteRepository::in_memory().unwrap());
+        let state = AppState::new(
+            &HandleArgs {
+                blocks: 0,
+                auto_exit_secs: 0.0,
+                bench_pages: 0,
+                pictures: 0,
+                marks: 0,
+                code: 0,
+            },
+            Some(repo.clone()),
+        );
+        (state, repo)
+    }
+
+    /// A write reaches the catalog *and* the file, because both readers are fed
+    /// by the one funnel (`record` → `org_absorb` + the persistence queue). A test
+    /// that only looked at the catalog would pass with a store that wrote nothing.
+    #[test]
+    fn an_organizer_write_reaches_the_catalog_and_the_file_together() {
+        use crate::core::organizer::{ListId, NoteId, TaskId};
+
+        let (state, repo) = org_session();
+        let list = state.org_create_list("工作".into()).unwrap();
+        let note = state.org_create_note().unwrap();
+        let task = state.org_create_task(list).unwrap();
+
+        assert!(state.organizer().note(NoteId(note as u64)).is_some());
+        assert!(state.organizer().list(ListId(list as u64)).is_some());
+        state.persistence_force_flush();
+        let stored = repo.load_organizer().unwrap();
+        assert_eq!(
+            (stored.notes.len(), stored.lists.len(), stored.tasks.len()),
+            (1, 1, 1)
+        );
+        assert_eq!(stored.tasks[0].list, ListId(list as u64), "the task landed in its list");
+        assert_eq!(stored.tasks[0].title, "", "a new row has no title until one is typed");
+
+        // an edit, and the file follows it
+        state.org_note_title(note, "会议记录".into());
+        state.org_note_body(note, "第一行\n第二行".into());
+        state.org_note_tags(note, "会议, 核心, 会议".into());
+        state.org_task_title(task, "写周报".into());
+        state.org_task_priority(task, 3);
+        state.org_task_due(task, crate::core::today_iso());
+        state.persistence_force_flush();
+
+        let stored = repo.load_organizer().unwrap();
+        assert_eq!(stored.notes[0].title, "会议记录");
+        assert_eq!(stored.notes[0].body, "第一行\n第二行");
+        assert_eq!(
+            stored.notes[0].tags,
+            vec!["会议".to_string(), "核心".into()],
+            "a repeated tag is dropped, and the newlines in a body survive"
+        );
+        assert_eq!(stored.tasks[0].title, "写周报");
+        assert_eq!(stored.tasks[0].priority, crate::core::organizer::Priority::High);
+        assert_eq!(stored.tasks[0].due.as_deref(), Some(crate::core::today_iso().as_str()));
+
+        // a delete takes the row out of both readers
+        state.org_delete_note(note);
+        assert!(state.organizer().note(NoteId(note as u64)).is_none());
+        state.persistence_force_flush();
+        assert!(repo.load_organizer().unwrap().notes.is_empty());
+        assert_eq!(repo.load_organizer().unwrap().tasks.len(), 1, "the task is untouched");
+        assert!(state.organizer().task(TaskId(task as u64)).is_some());
+    }
+
+    /// **The area's own stack.** A document edit and an organizer edit, then one
+    /// Ctrl+Z's worth of each: the organizer's undo takes the note back and leaves
+    /// the block alone, and the page's undo still takes the block back. This is
+    /// the property `core::ORGANIZER_STACK` exists for, and the reason a user can
+    /// keep a note open next to a document and trust the chord they press.
+    #[test]
+    fn the_organizer_undoes_on_its_own_stack_and_never_the_pages() {
+        let (state, _repo) = org_session();
+        use crate::core::organizer::NoteId;
+
+        // a document edit …
+        let page = super::core_page_id(state.open_page.get());
+        let block = state
+            .doc
+            .borrow()
+            .page_blocks(page)
+            .first()
+            .map(|b| b.id)
+            .expect("the demo page has blocks");
+        state.exec_on_open_page(crate::core::Command::ReplaceText {
+            id: block,
+            text: "编辑过的正文".into(),
+        });
+        let block_after = state.doc.borrow().block(block).unwrap().text.clone();
+        assert_eq!(block_after, "编辑过的正文");
+
+        // … and an organizer edit
+        let note = state.org_create_note().unwrap();
+        state.org_note_title(note, "笔记标题".into());
+        assert_eq!(
+            state.organizer().note(NoteId(note as u64)).unwrap().title,
+            "笔记标题"
+        );
+
+        // the area's undo takes the *whole* note away (its create was the step
+        // before the title), and the document is exactly where it was
+        assert!(state.undo_org().is_some(), "the title edit was a step");
+        assert_eq!(
+            state.organizer().note(NoteId(note as u64)).unwrap().title,
+            "",
+            "the title edit came off"
+        );
+        assert_eq!(
+            state.doc.borrow().block(block).unwrap().text,
+            "编辑过的正文",
+            "the organizer's undo did not reach the document"
+        );
+
+        // and the page's undo still reaches the block
+        assert!(state.undo_open_page().is_some(), "the document edit was a step");
+        assert_ne!(state.doc.borrow().block(block).unwrap().text, "编辑过的正文");
+        assert_eq!(
+            state.organizer().note(NoteId(note as u64)).unwrap().title,
+            "",
+            "the page's undo did not resurrect the note's title"
+        );
+    }
+
+    /// A commit that changed nothing is not a step and does not restamp
+    /// `edited`: clicking into a title and out of it again is something users do
+    /// constantly, and it must not push a history entry or make the row look
+    /// newer than the last edit that actually happened.
+    #[test]
+    fn a_row_that_did_not_move_is_not_a_step_and_keeps_its_timestamp() {
+        let (state, _repo) = org_session();
+        use crate::core::organizer::NoteId;
+
+        let note = state.org_create_note().unwrap();
+        state.org_note_title(note, "标题".into());
+        let stamped = state.organizer().note(NoteId(note as u64)).unwrap().edited;
+        let steps = {
+            // the area's stack, read the way only this module can: one undo,
+            // then one redo, so the count is unchanged either way
+            assert!(state.undo_org().is_some());
+            assert!(state.redo_org().is_some());
+            state.organizer().note(NoteId(note as u64)).unwrap().title.clone()
+        };
+        assert_eq!(steps, "标题");
+
+        // the same text again: no step, no restamp
+        assert!(state.org_note_title(note, "标题".into()).is_none());
+        let catalog = state.organizer();
+        let again = catalog.note(NoteId(note as u64)).unwrap();
+        assert_eq!(again.edited, stamped, "an unchanged write moved the clock");
+        assert_eq!(again.title, "标题");
+        drop(catalog);
+
+        // a real edit does move it, and is a step
+        assert!(state.org_note_title(note, "改过的".into()).is_some());
+        assert_eq!(state.organizer().note(NoteId(note as u64)).unwrap().title, "改过的");
+
+        // an edit aimed at a row that is not there is refused, not invented
+        assert!(state.org_note_title(note + 999, "幽灵".into()).is_none());
+        assert!(state.org_delete_note(note + 999).is_none());
+    }
+
+    /// Deleting a list files its tasks in the inbox **in the same step**, and one
+    /// undo brings the list and its tasks back together — the whole reason
+    /// `Command::DeleteTaskList` carries the moved rows.
+    #[test]
+    fn deleting_a_list_files_its_tasks_in_the_inbox_and_undo_brings_both_back() {
+        let (state, repo) = org_session();
+        use crate::core::organizer::ListId;
+
+        let list = state.org_create_list("工作".into()).unwrap();
+        let a = state.org_create_task(list).unwrap();
+        let b = state.org_create_task(list).unwrap();
+        state.org_task_title(a, "第一件".into());
+        state.org_task_title(b, "第二件".into());
+
+        assert_eq!(state.org_delete_list(list), Some(2));
+        assert!(state.organizer().list(ListId(list as u64)).is_none());
+        let moved = state.organizer();
+        assert_eq!(moved.tasks_in(ListId::INBOX).count(), 2, "both tasks are in the inbox");
+        assert_eq!(moved.tasks_in(ListId(list as u64)).count(), 0);
+        state.persistence_force_flush();
+        assert_eq!(
+            repo.load_organizer().unwrap().tasks_in(ListId::INBOX).count(),
+            2,
+            "and the file agrees"
+        );
+
+        // one step back: the list and both tasks, as they were
+        assert!(state.undo_org().is_some());
+        let back = state.organizer();
+        assert_eq!(back.list(ListId(list as u64)).map(|l| l.name.as_str()), Some("工作"));
+        assert_eq!(back.tasks_in(ListId(list as u64)).count(), 2);
+        assert_eq!(back.tasks_in(ListId::INBOX).count(), 0);
+
+        // the inbox is not a list, so it cannot be created or deleted
+        assert!(state.org_delete_list(0).is_none());
+    }
+
+    /// The projections, read the way the delegate reads them. The five smart
+    /// views are predicates over one catalog, and the sort is a question asked of
+    /// the same rows — so this checks the four states a user actually looks at
+    /// (the inbox, today, the next seven days, done) plus a list and a search.
+    #[test]
+    fn the_smart_views_are_predicates_over_one_catalog() {
+        use slint::Model as _;
+
+        let (state, _repo) = org_session();
+        let today = crate::core::today_iso();
+        let day = |offset: i64| {
+            crate::core::date::to_iso(super::now_secs().div_euclid(86_400) + offset)
+        };
+
+        let inbox_due_today = state.org_create_task(-1).unwrap();
+        state.org_task_title(inbox_due_today, "今天到期".into());
+        state.org_task_due(inbox_due_today, today.clone());
+        let inbox_open = state.org_create_task(-1).unwrap();
+        state.org_task_title(inbox_open, "没有日期".into());
+        let overdue = state.org_create_task(-1).unwrap();
+        state.org_task_title(overdue, "已经逾期".into());
+        state.org_task_due(overdue, day(-2));
+        let next_week = state.org_create_task(-1).unwrap();
+        state.org_task_title(next_week, "下周".into());
+        state.org_task_due(next_week, day(5));
+        let far = state.org_create_task(-1).unwrap();
+        state.org_task_title(far, "很久以后".into());
+        state.org_task_due(far, day(30));
+        let finished = state.org_create_task(-1).unwrap();
+        state.org_task_title(finished, "做完了".into());
+        state.org_task_done(finished, true);
+
+        let list = state.org_create_list("工作".into()).unwrap();
+        let listed = state.org_create_task(list).unwrap();
+        state.org_task_title(listed, "清单里的".into());
+
+        // No UI is attached in a test, so `rebuild_organizer` reads its fallback:
+        // 全部 with nothing picked (the window always has a real `org-view`, so
+        // this default is only ever the headless one). The checks that follow ask
+        // the projections directly, which is what the delegate's model is built
+        // from.
+        let dates = super::OrgDates::now();
+        let view = |v: i32, l: i64, sort: i32| state.org_tasks(v, l, "", sort, &dates, -1);
+        state.rebuild_organizer();
+        assert_eq!(state.task_rows.row_count(), 7, "the headless default is 全部");
+
+        // 收集箱: the six tasks whose list names no stored list, and not the one
+        // filed in 工作
+        let inbox: Vec<String> = view(0, -1, 0).iter().map(|r| r.title.to_string()).collect();
+        assert_eq!(inbox.len(), 6, "{inbox:?}");
+        assert!(!inbox.contains(&"清单里的".to_string()));
+
+        // 今天: the one dated today, and not the finished one
+        let today_rows = view(1, -1, 0);
+        assert_eq!(today_rows.len(), 1, "{:?}", today_rows.len());
+        assert_eq!(today_rows[0].due, today);
+        assert!(!today_rows[0].overdue);
+
+        // 近七天: today's excluded, the overdue one excluded, the +5 one in
+        let week_rows = view(2, -1, 0);
+        assert_eq!(week_rows.len(), 1);
+        assert_eq!(week_rows[0].title, "下周");
+
+        // 全部: everything, including the far-future and the finished ones
+        assert_eq!(view(3, -1, 0).len(), 7);
+        // 已完成
+        let done_rows = view(4, -1, 0);
+        assert_eq!(done_rows.len(), 1);
+        assert_eq!(done_rows[0].title, "做完了");
+
+        // a stored list is the *other* half of the same selector, and the overdue
+        // flag is a property of the row rather than of the view it is read in
+        let listed_rows = view(0, list, 0);
+        assert_eq!(listed_rows.len(), 1);
+        assert_eq!(listed_rows[0].title, "清单里的");
+        assert_eq!(listed_rows[0].list_name, "工作");
+        let inbox_rows = view(0, -1, 0);
+        let overdue_row = inbox_rows
+            .iter()
+            .find(|r| r.title == "已经逾期")
+            .expect("the overdue task is in the inbox");
+        assert!(overdue_row.overdue);
+        assert_eq!(
+            overdue_row.due_label,
+            day(-2).get(5..).unwrap_or_default(),
+            "an overdue row still says which day it was due"
+        );
+
+        // sorting by 截止日期 puts the dated rows first, in order, and the
+        // undated ones last
+        let sorted = view(0, -1, 2);
+        let dated: Vec<String> = sorted
+            .iter()
+            .take_while(|r| !r.due.is_empty())
+            .map(|r| r.due.to_string())
+            .collect();
+        let mut wanted = dated.clone();
+        wanted.sort();
+        assert_eq!(dated, wanted, "the deadline sort is chronological");
+        assert_eq!(sorted.last().unwrap().due, "", "undated rows are last");
+
+        // a note search is a needle over title, body and tags
+        let note = state.org_create_note().unwrap();
+        state.org_note_title(note, "会议记录".into());
+        state.org_note_body(note, "关于同步".into());
+        let found = state.org_notes("同步", -1);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, note as i32);
+        assert_eq!(state.org_notes("这个词不存在", -1).len(), 0);
+        // and the chip row's own counts, which the inbox one folds a dangling
+        // list into
+        let lists = state.org_lists(0, -1);
+        assert!(lists[0].smart, "收集箱 is the chip the view half owns");
+        assert_eq!(lists[0].count, 6);
+        assert_eq!(lists[1].name, "工作");
+        assert_eq!(lists[1].count, 1);
     }
 }

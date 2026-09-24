@@ -6,8 +6,8 @@
 // 'static callbacks capture a Weak and upgrade() it at fire time.
 
 use crate::app::state::{
-    core_page_id, kind_from_int, palette_action, AppState, PaletteAction, PAGE_GETTING_STARTED,
-    ROW_NEW_PAGE,
+    core_page_id, kind_from_int, palette_action, AppState, PaletteAction,
+    PAGE_GETTING_STARTED, ROW_NEW_PAGE,
 };
 use crate::core::database::PropertyKind;
 use crate::core::{BlockId, Change, Command, Lang};
@@ -86,7 +86,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
     }
 
     {
-        let gw = ui.global::<UIState>().as_weak();
+        let gw = ui_state_weak(ui);
         let s = state.clone();
         let cmd = cmd_tx.clone();
         ui.global::<UIState>().on_sync_now(move |id| {
@@ -98,7 +98,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
         });
     }
     {
-        let gw = ui.global::<UIState>().as_weak();
+        let gw = ui_state_weak(ui);
         let s = state.clone();
         let cmd = cmd_tx.clone();
         ui.global::<UIState>().on_sync_pair(move |id| {
@@ -110,7 +110,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
         });
     }
     {
-        let gw = ui.global::<UIState>().as_weak();
+        let gw = ui_state_weak(ui);
         let s = state.clone();
         ui.global::<UIState>().on_sync_forget(move |id| {
             let g = gw.upgrade().unwrap();
@@ -120,7 +120,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
         });
     }
     {
-        let gw = ui.global::<UIState>().as_weak();
+        let gw = ui_state_weak(ui);
         let s = state.clone();
         ui.global::<UIState>().on_sync_auto_toggled(move |on| {
             let g = gw.upgrade().unwrap();
@@ -136,7 +136,7 @@ fn start_sync(ui: &AppWindow, state: &Rc<AppState>) {
         });
     }
     {
-        let gw = ui.global::<UIState>().as_weak();
+        let gw = ui_state_weak(ui);
         let cmd = cmd_tx.clone();
         ui.global::<UIState>().on_sync_add(move |text| {
             let g = gw.upgrade().unwrap();
@@ -415,9 +415,22 @@ mod tests {
     }
 }
 
+/// The window's `UIState` as a weak handle.
+///
+/// The plain spelling is `ui.global::<UIState>().as_weak()`, and it no longer
+/// type-checks: Slint implements `Global` once *per component*, and the tray
+/// (ADR-0096) is a second exported component, so `UIState` has two impls.
+/// `as_weak` is a `Global` method whose `Component` parameter `Self` does not
+/// determine — `ui.global::<UIState>()` pins it, but what comes back is only a
+/// `UIState`, so the method call has to guess and cannot. Naming the component
+/// here is what the compiler inferred on its own while there was one impl.
+fn ui_state_weak(ui: &AppWindow) -> slint::Weak<UIState<'static>> {
+    <UIState<'_> as Global<'_, AppWindow>>::as_weak(&ui.global::<UIState>())
+}
+
 pub fn bind(ui: &AppWindow, state: &Rc<AppState>) {
     let g = ui.global::<UIState>();
-    state.set_ui(ui.global::<UIState>().as_weak());
+    state.set_ui(ui_state_weak(ui));
     g.set_sidebar_rows(state.sidebar_model());
     g.set_blocks(state.blocks_model());
     g.set_backlinks(state.backlinks_model());
@@ -428,6 +441,12 @@ pub fn bind(ui: &AppWindow, state: &Rc<AppState>) {
     g.set_block_menu_rows(state.block_menu_model());
     g.set_version_rows(state.versions_model());
     g.set_version_diff_rows(state.version_diff_model());
+    // SPEC §四十一's three models and the day the area remembers. The models
+    // start empty and `org_refresh` fills them at the end of `wire`, once the
+    // callbacks that can change a filter exist.
+    g.set_note_rows(state.note_rows_model());
+    g.set_task_rows(state.task_rows_model());
+    g.set_task_list_rows(state.task_list_rows_model());
     let (title, crumb) = state.open_page_info(state.open_page.get());
     g.set_page_title(title.into());
     g.set_page_breadcrumb(crumb.into());
@@ -442,9 +461,6 @@ pub fn bind(ui: &AppWindow, state: &Rc<AppState>) {
     g.set_data_dir(state.data_dir().unwrap_or_default().into());
     g.set_storage_available(state.data_dir().is_some());
     state.update_page_stats();
-    if let Some(notice) = state.take_db_notice() {
-        g.set_db_notice(notice.into());
-    }
     if let Some(notice) = state.take_db_notice() {
         g.set_db_notice(notice.into());
     }
@@ -515,7 +531,7 @@ fn renderer_name() -> &'static str {
 }
 
 pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
-    let gw = ui.global::<UIState>().as_weak();
+    let gw = ui_state_weak(ui);
     state.set_ui(gw.clone());
 
     // ---- shell ----
@@ -1291,6 +1307,10 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
                 PaletteAction::CopyMarkdown => copy_current_page_markdown(&g, &s),
                 PaletteAction::NavigateBack => navigate(&g, &s, false),
                 PaletteAction::NavigateForward => navigate(&g, &s, true),
+                PaletteAction::OpenOrganizer(tab) => {
+                    org_commit_field(&g, &s);
+                    org_open(&g, &s, tab);
+                }
                 PaletteAction::OpenPage(page) => open(&g, &s, page),
                 PaletteAction::None => {}
             }
@@ -4095,6 +4115,16 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
         let s = state.clone();
         ui.global::<UIState>().on_undo_requested(move || {
             let g = gw.upgrade().unwrap();
+            // SPEC §四十一: the area has its own stack, so the same chord has to
+            // mean the same thing *where the user is standing*. A Ctrl+Z in the
+            // organizer that walked the open page's history would be an undo that
+            // undid something the user cannot see.
+            if g.get_active_area() == "organizer" {
+                org_commit_field(&g, &s);
+                s.undo_org();
+                org_refresh(&g, &s);
+                return;
+            }
             flush_pending_edit(&g, &s);
             s.undo_open_page();
             refresh_focused_text(&g, &s);
@@ -4106,11 +4136,606 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
         let s = state.clone();
         ui.global::<UIState>().on_redo_requested(move || {
             let g = gw.upgrade().unwrap();
+            if g.get_active_area() == "organizer" {
+                org_commit_field(&g, &s);
+                s.redo_org();
+                org_refresh(&g, &s);
+                return;
+            }
             flush_pending_edit(&g, &s);
             s.redo_open_page();
             refresh_focused_text(&g, &s);
         });
     }
+
+    // ---- SPEC §四十一: the organizer (notes and tasks) ----
+    //
+    // The area's whole UI surface. Every handler that changes what is *showing*
+    // (the tab, the chip, the needle, the sort) ends in `org_refresh`, and every
+    // one that changes a *row* ends in `org_refresh` too — the two are the same
+    // call because the projections are derived from the catalog, so there is no
+    // second place a list could be out of date.
+    //
+    // `org_commit_field` is called first by anything that moves the selection or
+    // leaves the area: a keystroke still inside the 300 ms window has not become
+    // a row yet, and dropping it would be the app losing a character the user
+    // watched themselves type.
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_open_requested(move |tab| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            org_open(&g, &s, tab);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_close_requested(move || {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            show_open_page(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_note_create(move || {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            if let Some(id) = s.org_create_note() {
+                g.set_org_selected_note(id as i32);
+            }
+            org_refresh(&g, &s);
+            org_load_drafts(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_note_selected(move |id| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            g.set_org_selected_note(id);
+            org_refresh(&g, &s);
+            org_load_drafts(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_note_pin_toggled(move |id| {
+            let g = gw.upgrade().unwrap();
+            let pinned = !g.get_org_note_detail().pinned;
+            s.org_note_pinned(id as i64, pinned);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_note_deleted(move |id| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            if let Some(title) = s.org_delete_note(id as i64) {
+                g.set_org_selected_note(-1);
+                org_refresh(&g, &s);
+                org_load_drafts(&g, &s);
+                g.set_db_notice(format!("已删除笔记「{title}」 — Ctrl+Z 可撤销。").into());
+            }
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_task_create(move || {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            // The new task lands in whichever chip is showing, which is the only
+            // honest answer to "where does this go": a smart view is a *question*
+            // ("today", "unfinished"), not a list, so it means the inbox.
+            let list = g.get_org_list();
+            if let Some(id) = s.org_create_task(list as i64) {
+                g.set_org_selected_task(id as i32);
+            }
+            org_refresh(&g, &s);
+            org_load_drafts(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_task_selected(move |id| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            g.set_org_selected_task(id);
+            org_refresh(&g, &s);
+            org_load_drafts(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_task_done_toggled(move |id| {
+            let g = gw.upgrade().unwrap();
+            let done = !g.get_org_task_detail().done;
+            s.org_task_done(id as i64, done);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_task_priority_set(move |id, slot| {
+            let g = gw.upgrade().unwrap();
+            s.org_task_priority(id as i64, slot);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_task_due_set(move |id, due| {
+            let g = gw.upgrade().unwrap();
+            // The date input is not debounced: it is a picker's value, not prose,
+            // and `org_task_due` refuses anything that is not `YYYY-MM-DD` — so a
+            // half-typed date is *not* a step. The field keeps the user's text
+            // (it is bound to its own draft) and the row simply does not move
+            // until the text is a date.
+            s.org_task_due(id as i64, due.to_string());
+            org_refresh(&g, &s);
+            org_load_due_draft(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_task_repeat_set(move |id, slot| {
+            let g = gw.upgrade().unwrap();
+            s.org_task_repeat(id as i64, slot);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_task_list_set(move |id, list| {
+            let g = gw.upgrade().unwrap();
+            s.org_task_list(id as i64, list as i64);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_task_deleted(move |id| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            if let Some(title) = s.org_delete_task(id as i64) {
+                g.set_org_selected_task(-1);
+                org_refresh(&g, &s);
+                org_load_drafts(&g, &s);
+                g.set_db_notice(format!("已删除任务「{title}」 — Ctrl+Z 可撤销。").into());
+            }
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_subtask_added(move |task| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            s.org_subtask_add(task as i64);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        // A checklist line is text until it is clicked: several rows cannot share
+        // one draft, so the codebase's one-live-input rule applies and *this* is
+        // what opens the editor on the row the user picked.
+        ui.global::<UIState>().on_org_subtask_edit(move |_task, sub| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            let title = g
+                .get_org_task_detail()
+                .subtasks
+                .iter()
+                .find(|s| s.id == sub)
+                .map(|s| s.title.to_string())
+                .unwrap_or_default();
+            g.set_org_field_sub(sub);
+            g.set_org_subtask_draft(title.into());
+            g.set_org_field(ORG_FIELD_SUBTASK_TITLE);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_subtask_done_toggled(move |task, sub, done| {
+            let g = gw.upgrade().unwrap();
+            s.org_subtask_done(task as i64, sub as i64, done);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_subtask_deleted(move |task, sub| {
+            let g = gw.upgrade().unwrap();
+            // deleting a line while its input is live would leave the pending
+            // commit aimed at an id that is gone
+            if g.get_org_field_sub() == sub {
+                g.set_org_field(0);
+            }
+            s.org_subtask_delete(task as i64, sub as i64);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_list_created(move || {
+            let g = gw.upgrade().unwrap();
+            if let Some(id) = s.org_create_list(String::new()) {
+                g.set_org_list(id as i32);
+                org_refresh(&g, &s);
+            }
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_list_deleted(move |id| {
+            let g = gw.upgrade().unwrap();
+            if let Some(count) = s.org_delete_list(id as i64) {
+                // back to the inbox: the list the user was looking at is gone
+                g.set_org_list(-1);
+                g.set_org_view(SMART_INBOX);
+                org_refresh(&g, &s);
+                g.set_db_notice(
+                    format!("已删除清单，{count} 条任务已移入收集箱 — Ctrl+Z 可撤销。").into(),
+                );
+            }
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_view_picked(move |view| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            // the one selector's two halves: a smart view clears the list
+            g.set_org_view(view);
+            g.set_org_list(-1);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_list_picked(move |id| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            if id < 0 {
+                // the inbox chip is the *view* half: it is not a stored list
+                g.set_org_list(-1);
+                g.set_org_view(SMART_INBOX);
+            } else {
+                g.set_org_list(id);
+            }
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_sort_picked(move |slot| {
+            let g = gw.upgrade().unwrap();
+            g.set_org_sort(slot);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_query_changed(move || {
+            let g = gw.upgrade().unwrap();
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        // Leaked like every other timer in `wire`: it has to outlive this scope
+        // and Slint owns no timer for us. One timer for the whole area, because
+        // one field can be live at a time (the same rule the database cell keeps).
+        let t: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_field_edited(move |slot| {
+            let g = gw.upgrade().unwrap();
+            g.set_org_field(slot);
+            org_debounce_arm(t, &gw, &s);
+        });
+    }
+
+    // The area's models start empty (`bind` runs before the callbacks exist), so
+    // the first projection happens here — once, with every filter in place.
+    org_refresh(&ui.global::<UIState>(), state);
+}
+
+/// The two halves of the area's one selector, as Rust numbers them (`state.rs`'s
+/// `SMART_*`). The inbox is the one the "delete a list" path falls back to.
+const SMART_INBOX: i32 = 0;
+
+/// The field slots `org-field-edited` carries, matching `OrganizerArea.slint`'s
+/// `FIELD_*`. The number is the one thing the two sides agree on, so both sides
+/// spell the same list.
+const ORG_FIELD_NOTE_TITLE: i32 = 1;
+const ORG_FIELD_NOTE_BODY: i32 = 2;
+const ORG_FIELD_NOTE_TAGS: i32 = 3;
+const ORG_FIELD_TASK_TITLE: i32 = 4;
+const ORG_FIELD_TASK_NOTES: i32 = 5;
+const ORG_FIELD_TASK_TAGS: i32 = 6;
+const ORG_FIELD_SUBTASK_TITLE: i32 = 7;
+const ORG_FIELD_TASK_DUE: i32 = 8;
+
+/// Open one of the area's two tabs: the switch itself, then the projection.
+///
+/// The title bar says where the user is, because it always does — `page-title` is
+/// the one line at the top of the window, and an area that left it reading the
+/// document it is covering would be the window lying about itself.
+/// `show_open_page` puts the document's title back, so the two are one mechanism
+/// read in both directions.
+fn org_open(g: &UIState<'_>, state: &Rc<AppState>, tab: i32) {
+    g.set_active_area("organizer".into());
+    g.set_org_tab(tab);
+    g.set_page_title(if tab == 0 { "笔记" } else { "任务" }.into());
+    g.set_page_breadcrumb("".into());
+    // no *page* is showing, so the tree's highlight goes: a sidebar row that
+    // stays lit while the page it names is covered is the same lie one row down
+    g.set_sidebar_selected_id(0);
+    org_refresh(g, state);
+    org_load_drafts(g, state);
+}
+
+/// Re-project the area and push it into the window. The whole of "the area is
+/// out of date" is this call: `AppState::rebuild_organizer` reads the filters off
+/// `UIState` and rebuilds the three models plus the two detail rows.
+fn org_refresh(g: &UIState<'_>, state: &Rc<AppState>) {
+    g.set_org_today(crate::core::today_iso().into());
+    state.rebuild_organizer();
+}
+
+/// Load the detail pane's drafts from the selected rows. Called when the
+/// *selection* moves, never after a commit: a draft already holds what was just
+/// committed, and rewriting it is what would make a caret jump.
+fn org_load_drafts(g: &UIState<'_>, state: &Rc<AppState>) {
+    let note = g.get_org_note_detail();
+    if note.id >= 0 {
+        g.set_org_note_title_draft(note.title);
+        g.set_org_note_body_draft(note.body);
+        g.set_org_note_tags_draft(note.tags);
+    } else {
+        g.set_org_note_title_draft("".into());
+        g.set_org_note_body_draft("".into());
+        g.set_org_note_tags_draft("".into());
+    }
+    let task = g.get_org_task_detail();
+    if task.id >= 0 {
+        g.set_org_task_title_draft(task.title);
+        g.set_org_task_notes_draft(task.notes);
+        g.set_org_task_tags_draft(task.tags);
+    } else {
+        g.set_org_task_title_draft("".into());
+        g.set_org_task_notes_draft("".into());
+        g.set_org_task_tags_draft("".into());
+    }
+    g.set_org_field(0);
+    g.set_org_field_sub(-1);
+    org_load_due_draft(g, state);
+}
+
+/// The deadline field's own draft. Separate from the three above because it is
+/// the one that can hold text which is *not* a date yet — see
+/// `on_org_task_due_set` — and re-loading it after every attempt is what lets a
+/// refused string stay refused on screen instead of being rewritten into the ISO
+/// the row still holds.
+fn org_load_due_draft(g: &UIState<'_>, state: &Rc<AppState>) {
+    let _ = state;
+    let task = g.get_org_task_detail();
+    if g.get_org_field() != ORG_FIELD_TASK_DUE {
+        g.set_org_task_due_draft(task.due);
+    }
+}
+
+/// Commit the field a keystroke is still pending on, if any. The synchronous twin
+/// of `org_debounce_arm`'s timer, and the one that matters: everything that moves
+/// the selection or leaves the area calls this first, so the 300 ms window can
+/// never swallow a character the user watched themselves type.
+fn org_commit_field(g: &UIState<'_>, state: &Rc<AppState>) {
+    let slot = g.get_org_field();
+    if slot == 0 {
+        return;
+    }
+    g.set_org_field(0);
+    let note_id = g.get_org_selected_note() as i64;
+    let task_id = g.get_org_selected_task() as i64;
+    let sub_id = g.get_org_field_sub() as i64;
+    match slot {
+        ORG_FIELD_NOTE_TITLE => {
+            state.org_note_title(note_id, g.get_org_note_title_draft().to_string());
+        }
+        ORG_FIELD_NOTE_BODY => {
+            state.org_note_body(note_id, g.get_org_note_body_draft().to_string());
+        }
+        ORG_FIELD_NOTE_TAGS => {
+            state.org_note_tags(note_id, g.get_org_note_tags_draft().to_string());
+        }
+        ORG_FIELD_TASK_TITLE => {
+            state.org_task_title(task_id, g.get_org_task_title_draft().to_string());
+        }
+        ORG_FIELD_TASK_NOTES => {
+            state.org_task_notes(task_id, g.get_org_task_notes_draft().to_string());
+        }
+        ORG_FIELD_TASK_TAGS => {
+            state.org_task_tags(task_id, g.get_org_task_tags_draft().to_string());
+        }
+        ORG_FIELD_SUBTASK_TITLE => {
+            g.set_org_field_sub(-1);
+            state.org_subtask_title(task_id, sub_id, g.get_org_subtask_draft().to_string());
+        }
+        ORG_FIELD_TASK_DUE => {
+            let text = g.get_org_task_due_draft().to_string();
+            if state.org_task_due(task_id, text).is_some() {
+                // the row moved, so it is a step: put the committed ISO back in
+                // the field (it is the same string) and repaint
+                org_refresh(g, state);
+                g.set_org_task_due_draft(g.get_org_task_detail().due);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Restart the area's 300 ms commit timer — `debounce_arm`'s shape, and its
+/// rhythm on purpose: one keystroke burst is one undo step, in the editor and in
+/// this area alike.
+fn org_debounce_arm(
+    t: &'static slint::Timer,
+    gw: &slint::Weak<UIState<'static>>,
+    s: &Rc<AppState>,
+) {
+    let gw = gw.clone();
+    let s = s.clone();
+    t.start(
+        slint::TimerMode::SingleShot,
+        std::time::Duration::from_millis(300),
+        move || {
+            if let Some(g) = gw.upgrade() {
+                org_commit_field(&g, &s);
+                org_refresh(&g, &s);
+            }
+        },
+    );
+}
+
+/// The ids one `org_scene_seed` produced — returned rather than hard-coded
+/// because the creators allocate them, and a scene that guessed at an id would
+/// photograph the wrong row the day the watermark moved.
+struct OrgScene {
+    notes: [i32; 4],
+    lists: [i32; 2],
+    tasks: [i32; 6],
+}
+
+/// Plant the organizer's scene content: four notes, two lists and six tasks,
+/// chosen so that every state the area can paint appears at least once — a pin, a
+/// tag, a deadline that is today, one that is overdue, one in the next seven
+/// days, a finished task, a checklist and a priority bar.
+///
+/// Everything here goes through `AppState`'s own write path, which is the point:
+/// a scene is a *session*, not a fixture, so a bug in "create a note" would show
+/// up in the sweep rather than behind it. Dates are relative to today so the
+/// badges mean the same thing whenever the sweep runs.
+fn org_scene_seed(state: &Rc<AppState>) -> OrgScene {
+    let days = crate::app::state::now_secs().div_euclid(86_400);
+    let iso = |offset: i64| crate::core::date::to_iso(days + offset);
+
+    let mut scene = OrgScene {
+        notes: [-1; 4],
+        lists: [-1; 2],
+        tasks: [-1; 6],
+    };
+
+    // Lists first: the tasks below name them, and the chip row draws in `ord`
+    // order. Colour slots are `ColorKind`'s (6 blue, 5 green) — the closed palette
+    // rather than a second one.
+    scene.lists[0] = state.org_create_list("工作".into()).unwrap_or(-1) as i32;
+    scene.lists[1] = state.org_create_list("生活".into()).unwrap_or(-1) as i32;
+    state.org_list_color(scene.lists[1] as i64, 5);
+
+    // Notes: two titled, one untitled (the list row has to say 无标题), one long
+    // enough to elide.
+    let note = |title: &str, body: &str, tags: &str, pinned: bool| {
+        let id = state.org_create_note().unwrap_or(-1);
+        state.org_note_title(id, title.into());
+        state.org_note_body(id, body.into());
+        state.org_note_tags(id, tags.into());
+        state.org_note_pinned(id, pinned);
+        id as i32
+    };
+    scene.notes[0] = note(
+        "会议记录 · 九月",
+        "1. 剥离仓库的 rev 已经锁上\n2. 笔记与任务的数据层落地\n3. 同步快照升到 v2，两端必须一起更新",
+        "会议, 核心",
+        true,
+    );
+    scene.notes[1] = note(
+        "读书笔记",
+        "《The Design of Everyday Things》\n\n可见性、反馈、约束——三条比任何配色都重要。",
+        "读书",
+        false,
+    );
+    scene.notes[2] = note("", "", "", false);
+    scene.notes[3] = note(
+        "灵感",
+        "把「今天」和「最近七天」做成视图，而不是两个字段——用户关心的是问题，不是存储。",
+        "想法",
+        false,
+    );
+
+    // Tasks: every field the detail pane edits, at least once.
+    let task = |list: i32, title: &str, due: Option<String>, slot: i32, done: bool| {
+        let id = state.org_create_task(list as i64).unwrap_or(-1);
+        state.org_task_title(id, title.into());
+        state.org_task_priority(id, slot);
+        state.org_task_repeat(id, if done { 0 } else { 1 });
+        state.org_task_tags(id, "工作".into());
+        if let Some(due) = due {
+            state.org_task_due(id, due);
+        }
+        if done {
+            state.org_task_done(id, true);
+        }
+        id
+    };
+    scene.tasks[0] = task(
+        scene.lists[0],
+        "把笔记与任务接到两端",
+        Some(iso(3)),
+        3,
+        false,
+    ) as i32;
+    state.org_subtask_add(scene.tasks[0] as i64);
+    state.org_subtask_add(scene.tasks[0] as i64);
+    let subs: Vec<i32> = state
+        .organizer()
+        .task(crate::core::organizer::TaskId(scene.tasks[0] as u64))
+        .map(|t| t.subtasks.iter().map(|s| s.id as i32).collect())
+        .unwrap_or_default();
+    if let [first, second] = subs.as_slice() {
+        state.org_subtask_title(scene.tasks[0] as i64, *first as i64, "数据层 + 迁移".into());
+        state.org_subtask_title(
+            scene.tasks[0] as i64,
+            *second as i64,
+            "两个 shell 各写一遍界面".into(),
+        );
+        state.org_subtask_done(scene.tasks[0] as i64, *first as i64, true);
+    }
+    state.org_task_notes(
+        scene.tasks[0] as i64,
+        "先推 quire-core，再 bump 两个壳的 rev。".into(),
+    );
+
+    scene.tasks[1] = task(0, "今天写周报", Some(iso(0)), 2, false) as i32;
+    scene.tasks[2] = task(scene.lists[0], "整理上周的会议纪要", None, 0, true) as i32;
+    scene.tasks[3] = task(scene.lists[1], "交电费", Some(iso(-2)), 3, false) as i32;
+    scene.tasks[4] = task(0, "买牛奶", None, 1, false) as i32;
+    scene.tasks[5] = task(scene.lists[1], "周末爬山", Some(iso(5)), 2, false) as i32;
+
+    scene
 }
 
 /// Arm the one-shot poll timer for an in-flight async search. Each poll
@@ -5713,6 +6338,11 @@ fn navigate(g: &UIState<'_>, state: &Rc<AppState>, forward: bool) {
 fn show_open_page(g: &UIState<'_>, state: &Rc<AppState>) {
     let id = state.open_page.get();
     let (title, crumb) = state.open_page_info(id);
+    // SPEC §四十一: opening a page is also *leaving* the organizer when the area
+    // is showing — a sidebar row, a palette jump, a backlink and a nav step all
+    // arrive here, and one line here is what keeps every one of them from
+    // painting a page under a title that says 笔记.
+    g.set_active_area("docs".into());
     g.set_page_title(title.into());
     g.set_page_breadcrumb(crumb.into());
     g.set_sidebar_selected_id(id);
@@ -5808,6 +6438,64 @@ pub fn apply_scene(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
     let g = ui.global::<UIState>();
     match scene {
         "dark" => g.set_dark(true),
+        // SPEC §四十一: the organizer's scenes. They plant their own rows (the
+        // area has no file to read from in a headless session and no fixture is
+        // baked into `AppState::new` — a user's own notes are not sample content),
+        // and every one of them goes through the *real* write path
+        // (`org_create_*` / `org_*_set`), so a scene cannot photograph a state
+        // the commands could not produce.
+        "notes" | "notes-detail" | "notes-search" => {
+            let ids = org_scene_seed(state);
+            org_open(&g, state, 0);
+            if scene == "notes-detail" {
+                g.set_org_selected_note(ids.notes[1]);
+                org_refresh(&g, state);
+                org_load_drafts(&g, state);
+            }
+            if scene == "notes-search" {
+                g.set_org_query("会议".into());
+                org_refresh(&g, state);
+            }
+        }
+        "tasks" | "tasks-detail" | "tasks-list" | "tasks-overdue" => {
+            let ids = org_scene_seed(state);
+            org_open(&g, state, 1);
+            if scene == "tasks-list" {
+                // the second stored list, which is what the chip row looks like
+                // with one of *its* lists picked rather than a smart view
+                g.set_org_list(ids.lists[1]);
+            }
+            if scene == "tasks-detail" {
+                g.set_org_selected_task(ids.tasks[1]);
+            }
+            if scene == "tasks-overdue" {
+                // 收集箱 + sort by 截止日期: the two badges (今天 and 已逾期) in the
+                // order a reader checks them in
+                g.set_org_view(0);
+                g.set_org_list(-1);
+                g.set_org_sort(2);
+            }
+            org_refresh(&g, state);
+            if scene == "tasks-detail" {
+                org_load_drafts(&g, state);
+            }
+        }
+        "dark-notes" => {
+            g.set_dark(true);
+            apply_scene(ui, state, "notes");
+        }
+        "dark-tasks" => {
+            g.set_dark(true);
+            apply_scene(ui, state, "tasks");
+        }
+        "dark-notes-detail" => {
+            g.set_dark(true);
+            apply_scene(ui, state, "notes-detail");
+        }
+        "dark-tasks-detail" => {
+            g.set_dark(true);
+            apply_scene(ui, state, "tasks-detail");
+        }
         "palette" | "search" | "search-notes" | "menu" | "dialog" | "settings" => {
             apply_scene_overlay(ui, state, scene)
         }

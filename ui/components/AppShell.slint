@@ -10,6 +10,7 @@ import { IconButton } from "./IconButton.slint";
 import { Sidebar } from "./Sidebar.slint";
 import { Editor } from "./Editor.slint";
 import { MobileBar } from "./MobileBar.slint";
+import { OrganizerArea } from "./OrganizerArea.slint";
 import { UIState } from "../Types.slint";
 
 export component AppShell inherits Rectangle {
@@ -84,7 +85,12 @@ export component AppShell inherits Rectangle {
             // both holding `content-y <=> UIState.tree-viewport-y`, and the
             // scroll mirror would answer to whichever one last moved.
             if !UIState.touch-mode : Sidebar {}
-            Editor {}
+            // SPEC §四十一: the organizer takes the editor's place while it is
+            // the active area — the same swap the desktop shell makes, so the
+            // two `UIState.active-area` values (page / organizer) stay the only
+            // two this composition knows.
+            if UIState.active-area == "organizer" : OrganizerArea {}
+            if UIState.active-area != "organizer" : Editor {}
         }
         // The thumb-reachable row of a phone: nothing a finger has to travel to
         // the top of the window for. Its five actions are the desktop's own

@@ -3547,3 +3547,55 @@ M9.pre 交付的是「编译、链接、真机能启动」；这一刀还的是�
 （163 条字面量清单的其余部分），属下一刀；④锚定在 y=300 的场景里 492 px 高的菜单
 盖过了 thumb bar——真机长按锚在被按的行上，控制器 clamp 到窗口底，但「菜单与
 thumb bar 重叠」这个状态没有专门处理，观感留给真机判。
+
+---
+
+## M15 · 笔记与任务（SPEC §四十一）· quire-droid 镜像
+
+**做了什么**：把桌面那一刀（`quire-desktop` 的 §四十一）镜像进本仓，并把
+`quire-core` 的 pin 从 `2cfae83` 升到 `d43b095`（带 `core::organizer.rs`、9 个行级
+change、migration v24–v26 与 `core::ORGANIZER_STACK` 的那一枚）。
+
+镜像方式是**文件级三方合并**（`git merge-file`，base `7d0873f` / ours 本仓 head /
+theirs 桌面的 organizer 提交），不是打补丁：`state.rs` +1505、`controller.rs` +712、
+`Types.slint` +160、`Icons.slint` +23（`IcNote`）、`Sidebar.slint` +38、
+`MobileBar.slint` +24、`AppShell.slint` +8。合并把桌面的托盘 / 缩放（`e7d71d0`）也
+带了进来，逐个摘掉：`apply_zoom` 与三对缩放回调、`window-resized` 处理器、
+`base_scale` 字段与访问器、`ZOOM_STEPS` 阶梯、缩放测试、`Types.slint` 的四个回调声明。
+`state.rs` 的 `peer` 助手与同步测试本仓已有，合并重复了一份，删掉后者。
+
+**本仓自己的那部分**：`ui/components/OrganizerArea.slint`（新，~700 行）是**单栏**版
+（ADR-0104）——列表占满整屏、点一行翻到详情、返回键用 `org-note-selected(-1)` 取消
+选中翻回来；行高 44 dp，没有 hover 与键盘提示。`AppShell.slint` 按 `active-area` 在
+`OrganizerArea` 与 `Editor` 之间切换（`if`/`if !`，Slint 没有 `else`）；
+`MobileBar` 的六个项 → 七个（`/6` → `/7`），加「笔记」。
+
+**踩到的三个 Slint 坑**（都进了 `docs/UI_ARCHITECTURE.md` 的几何陷阱一节）：
+①`Rectangle` 没有固有宽度，且**显式 `width` 压过 `horizontal-stretch`**——桌面那份
+`width: grow ? 0px : field-width` 的写法让所有会伸长的字段变 0 px 宽，本仓照抄时必须
+改成 min/max + stretch（桌面随后也修了）；②组件必须**先声明再使用**，所以
+`OrganizerArea` 写在 `ListPane` / `DetailPane` 之后；③`ScrollView` 要显式从
+`std-widgets.slint` 引入。
+
+**验证**：`cargo check --workspace --all-targets` 干净（唯一警告是 `SettingsDialog` 的
+`ShortcutRow` 未使用，**在 `dfd6398` 的干净树上同样存在**，不是这一刀引入）；
+`cargo test --workspace` **122 passed / 0 failed / 10 ignored**（含 5 条 organizer 测试）；
+`just android-check` 通过；`just android-lib` 通过（aarch64 cdylib 真的链上了，
+`Finished release profile in 3.40s`）。
+
+> 第一次跑 `android-lib` 是失败的，但**失败在依赖里**：skia 预编译包下载被重置
+> （`curl: (56) Recv failure`，网络到 GitHub releases），回落到源码构建后
+> `ANDROID_NDK` 未设而 panic（脚本设的是 `ANDROID_NDK_HOME`，skia 的 build script 读
+> 前者）。把 `ANDROID_NDK` 一并导出后，源码构建走完并缓存，lib 通过。也就是说不必改
+> 代码，只有环境那一层要补一个字；这条留给下一个在干净机器上跑的人。
+
+**未验证**：真机上的长按与 44 dp 命中；组织器多行框里的中文输入法；两端互相同步的实机
+往返（`SNAPSHOT_VERSION` 升到 2，两个 shell 必须一起更新——所以本仓与桌面仓都没有
+push，等这一刀验完一起走）。
+
+**留下的欠账（不是漏掉）**：桌面在镜像之后又修了一处 headless 的旧账——`apply_scene`
+的 `dark-*` 臂靠 `set_dark(true)` 设主题，而默认主题本来就是暗的，所以 42 个 dark 臂
+等于把同一个场景画两遍；改法是让**场景名决定主题**（`apply_scene` 按名字前缀设 `dark`，
+像素交给新的 `apply_scene_body`，dark 臂改调 body）。本仓的 `apply_scene` 还是老写法
+（两侧各 4 个 `dark-*` 臂仍调 `apply_scene`），下一刀照搬即可——本仓这一刀的 dark 臂
+因此仍不能当证据用。

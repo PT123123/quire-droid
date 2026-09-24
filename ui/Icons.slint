@@ -228,6 +228,28 @@ component IcStar {
     }
 }
 
+// A note (SPEC §四十一): a page with its corner turned down and three lines on
+// it. Deliberately *not* `IcPage` — the two rows sit beside each other in the
+// sidebar and a note is not a page, so the difference has to be visible at 15 px.
+component IcNote {
+    in property <brush> color: Colors.text-secondary;
+    in property <length> size: 16px;
+    width: size; height: size;
+    Path {
+        width: parent.width; height: parent.height;
+        viewbox-x: 0; viewbox-y: 0; viewbox-width: 24; viewbox-height: 24;
+        stroke: color; stroke-width: 1.8px;
+        stroke-line-cap: round; stroke-line-join: round;
+        fill: transparent;
+        MoveTo { x: 5; y: 3; } LineTo { x: 15; y: 3; }
+        LineTo { x: 19; y: 7; } LineTo { x: 19; y: 21; }
+        LineTo { x: 5; y: 21; } Close {}
+        MoveTo { x: 15; y: 3; } LineTo { x: 15; y: 7; } LineTo { x: 19; y: 7; }
+        MoveTo { x: 8.5; y: 12; } LineTo { x: 15.5; y: 12; }
+        MoveTo { x: 8.5; y: 16; } LineTo { x: 15.5; y: 16; }
+    }
+}
+
 component IcClock {
     in property <brush> color: Colors.text-secondary;
     in property <length> size: 16px;
@@ -601,4 +623,5 @@ export component Icon {
     IcPalette { visible: root.name == "palette"; size: root.size; color: root.color; }
     IcSmile { visible: root.name == "smile"; size: root.size; color: root.color; }
     IcLock { visible: root.name == "lock"; size: root.size; color: root.color; }
+    IcNote { visible: root.name == "note"; size: root.size; color: root.color; }
 }
