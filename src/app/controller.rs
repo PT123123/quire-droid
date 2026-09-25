@@ -33,6 +33,17 @@ fn page_drag_id(data: &slint::DataTransfer) -> Option<i32> {
     data.plain_text().ok()?.strip_prefix(PAGE_DRAG_MIME)?.parse().ok()
 }
 
+/// The board's card payload, unpacked. The same shape the two above have: the
+/// delegate carries a `DataTransfer` it never looks inside, and the id is read
+/// back here or nowhere.
+fn org_card_id(data: &slint::DataTransfer) -> Option<i32> {
+    data.plain_text()
+        .ok()?
+        .strip_prefix(crate::app::state::ORG_CARD_MIME)?
+        .parse()
+        .ok()
+}
+
 /// The extensions the attachment decoder can actually read. Named once because
 /// the picture picker and the cover picker promise the same list (SPEC §三十七).
 const PICTURE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "gif"];
@@ -722,6 +733,48 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
         ui.global::<UIState>().on_menu_action(move |action| {
             let g = gw.upgrade().unwrap();
             let id = g.get_menu_node_id();
+            // ---- SPEC §四十一: the task row's ⋯ ----
+            // One branch for the whole family, because the two halves differ only
+            // in what the id *encodes*: the five actions are ids of their own,
+            // and a move-to row is `MENU_ORG_MOVE_BASE` plus the list it means.
+            // The range is closed at both ends — see `MENU_ORG_LIMIT`.
+            if (crate::app::state::MENU_ORG_OPEN..crate::app::state::MENU_ORG_LIMIT)
+                .contains(&action)
+            {
+                let task = id as i64;
+                match action {
+                    crate::app::state::MENU_ORG_DONE => {
+                        s.org_task_done(task, true);
+                    }
+                    crate::app::state::MENU_ORG_UNDONE => {
+                        s.org_task_done(task, false);
+                    }
+                    crate::app::state::MENU_ORG_TO_INBOX => {
+                        s.org_task_list(task, -1);
+                    }
+                    crate::app::state::MENU_ORG_DELETE => {
+                        if let Some(title) = s.org_delete_task(task) {
+                            g.set_org_selected_task(-1);
+                            g.set_db_notice(
+                                format!("已删除任务「{title}」 — Ctrl+Z 可撤销。").into(),
+                            );
+                        }
+                    }
+                    _ if action >= crate::app::state::MENU_ORG_MOVE_BASE => {
+                        s.org_task_list(
+                            task,
+                            (action - crate::app::state::MENU_ORG_MOVE_BASE) as i64,
+                        );
+                    }
+                    // 打开详情 asks for nothing to *change*: the ⋯ click already
+                    // selected the row, and this row is how the user says "yes,
+                    // that one" after reading the others.
+                    _ => {}
+                }
+                org_refresh(&g, &s);
+                org_load_drafts(&g, &s);
+                return;
+            }
             // submenu navigation swaps the rows and keeps the popup open;
             // the taller Move-to list re-anchors so it stays on the window
             if action == crate::app::state::MENU_MOVE_TO
@@ -4447,6 +4500,129 @@ pub fn wire(ui: &AppWindow, state: &Rc<AppState>) {
         });
     }
     {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_tag_picked(move |tag| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            g.set_org_tag(tag);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_mode_picked(move |mode| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            g.set_org_mode(mode);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_show_done_toggled(move || {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            let show = !g.get_org_show_done();
+            g.set_org_show_done(show);
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_quick_add_submitted(move || {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            let title = g.get_org_quick_add().to_string();
+            let view = g.get_org_view();
+            let list = g.get_org_list() as i64;
+            let today = g.get_org_today().to_string();
+            if let Some(id) = s.org_quick_add(view, list, title, &today) {
+                g.set_org_quick_add("".into());
+                g.set_org_selected_task(id as i32);
+            }
+            org_refresh(&g, &s);
+            org_load_drafts(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        // A board column's own ＋ line. It creates in *that* column's list, which
+        // is the whole difference from the list view's quick-add — there is no
+        // ambiguous "where does this go" on a board.
+        ui.global::<UIState>().on_org_task_add_to(move |list, title| {
+            let g = gw.upgrade().unwrap();
+            if let Some(id) = s.org_quick_add(-1, list as i64, title.to_string(), "") {
+                g.set_org_selected_task(id as i32);
+            }
+            org_refresh(&g, &s);
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        // The row's ⋯. A phone has no pointer position to anchor to, so the
+        // popup is centred the way the version panel is — a card 184 px wide
+        // pinned to a touch point would sit half off a 400 dp screen.
+        ui.global::<UIState>().on_org_task_menu_requested(move |id, _x, _y| {
+            let g = gw.upgrade().unwrap();
+            org_commit_field(&g, &s);
+            g.set_org_selected_task(id);
+            g.set_menu_node_id(id);
+            s.fill_org_task_menu(id);
+            g.set_menu_rows(s.menu_model());
+            let menu_h = g.get_menu_rows().row_count() as f32 * 30.0 + 8.0;
+            g.set_menu_x((g.get_window_w() - 184.0) / 2.0);
+            g.set_menu_y(((g.get_window_h() - menu_h) / 2.0).max(48.0));
+            g.set_menu_open(true);
+            org_refresh(&g, &s);
+            org_load_drafts(&g, &s);
+        });
+    }
+    {
+        ui.global::<UIState>().on_org_card_payload(|id| {
+            let mut data = slint::DataTransfer::default();
+            data.set_plain_text(format!("{}{id}", crate::app::state::ORG_CARD_MIME).into());
+            data
+        });
+    }
+    {
+        let gw = gw.clone();
+        ui.global::<UIState>().on_org_card_hover(move |data, list| {
+            let Some(_) = org_card_id(&data) else {
+                return false;
+            };
+            // Lighting the column the card is over is this callback's other job:
+            // `can-drop` runs as the pointer crosses each column, so the last one
+            // it said yes to is the one being hovered.
+            if let Some(g) = gw.upgrade() {
+                g.set_org_drop_list(list);
+            }
+            true
+        });
+    }
+    {
+        let gw = gw.clone();
+        let s = state.clone();
+        ui.global::<UIState>().on_org_card_dropped(move |data, list| {
+            let g = gw.upgrade().unwrap();
+            g.set_org_drop_list(-2);
+            let Some(id) = org_card_id(&data) else {
+                return;
+            };
+            // Dropping a card back on its own column is not a step: the write
+            // returns `None` and nothing is recorded, which is the same rule
+            // every other no-op edit in this area follows.
+            s.org_task_list(id as i64, list as i64);
+            org_refresh(&g, &s);
+        });
+    }
+
+    {
         // Leaked like every other timer in `wire`: it has to outlive this scope
         // and Slint owns no timer for us. One timer for the whole area, because
         // one field can be live at a time (the same rule the database cell keeps).
@@ -6457,13 +6633,20 @@ pub fn apply_scene(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
                 org_refresh(&g, state);
             }
         }
-        "tasks" | "tasks-detail" | "tasks-list" | "tasks-overdue" => {
+        "tasks" | "tasks-detail" | "tasks-list" | "tasks-overdue" | "tasks-board" => {
             let ids = org_scene_seed(state);
             org_open(&g, state, 1);
             if scene == "tasks-list" {
                 // the second stored list, which is what the chip row looks like
                 // with one of *its* lists picked rather than a smart view
                 g.set_org_list(ids.lists[1]);
+            }
+            if scene == "tasks-board" {
+                // 平铺 is a *whole-board* view: it groups by list, so a filter
+                // that hid a list would be a board with a column missing
+                g.set_org_mode(1);
+                g.set_org_view(3);
+                g.set_org_list(-1);
             }
             if scene == "tasks-detail" {
                 g.set_org_selected_task(ids.tasks[1]);
@@ -6487,6 +6670,10 @@ pub fn apply_scene(ui: &AppWindow, state: &Rc<AppState>, scene: &str) {
         "dark-tasks" => {
             g.set_dark(true);
             apply_scene(ui, state, "tasks");
+        }
+        "dark-tasks-board" => {
+            g.set_dark(true);
+            apply_scene(ui, state, "tasks-board");
         }
         "dark-notes-detail" => {
             g.set_dark(true);

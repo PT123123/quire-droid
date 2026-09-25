@@ -867,4 +867,21 @@ First functional release: a local, single-file-database notes workspace.
 - Deleting a task or a note writes its line into the notice band, which is this
   shell's only transient surface; the wording names the chord on the desktop and
   the bar's own undo here
+- **The desktop's page was re-laid-out and this copy followed** (ADR-0105): the
+  header now says what is showing and how many (a list's 项待办, the notes'
+  条笔记, a board's 个清单 · 项待办), a quick-add line sits above the task rows, a
+  footer carries the completed switch and 已完成 X / Y, and the task row is the
+  desktop's (round checkbox, tag and list pills, the priority glyph ▲ ◆ ▼, a due
+  badge, the list's dot) at touch sizes — 58 dp rather than 52. The detail is the
+  same form of boxed choice rows, with the checklist in its own box and the ＋
+  line inside it
+- **平铺**: the 列表/平铺 switch in the header opens a kanban board, one column
+  per list, where a card drags between columns and each column's ＋ line adds
+  straight into it
+- The row's ⋯ is **always drawn** here rather than faded in on hover: a finger
+  cannot hover, so a menu that only a mouse reveals would be a menu no phone can
+  open. The shared context menu it opens is centred rather than anchored to the
+  touch point, because a 184 px popup pinned to a finger sits half off a 400 dp
+  screen
+- 笔记 gained the tag column (most-used first); tapping a tag filters the list
 

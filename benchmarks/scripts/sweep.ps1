@@ -58,8 +58,9 @@ $all = @(
     # single-pane copy, so these scenes are the only place its list→detail flip
     # is photographed at all — a scene nobody sweeps is a scene nobody measures.
     "notes", "notes-detail", "notes-search",
-    "tasks", "tasks-detail", "tasks-list", "tasks-overdue",
+    "tasks", "tasks-detail", "tasks-list", "tasks-overdue", "tasks-board",
     "dark-notes", "dark-notes-detail", "dark-tasks", "dark-tasks-detail",
+    "dark-tasks-board",
     # SPEC §三十九 (M14): the database's own scenes. They were run out of a
     # separate list for six slices, which is how two of them spent those slices
     # photographing the *same* table — a scene nobody sweeps is a scene nobody

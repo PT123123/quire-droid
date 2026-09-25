@@ -1,27 +1,29 @@
 // SPEC §四十一's second top-level area: 笔记 and 任务. quire-droid's copy.
 //
-// The desktop shell draws this as two panes side by side (the same component is
-// mounted by both). A phone has no width to split, so this copy is a **single
-// pane**: the list fills the window, tapping a row flips to that row's *self*
-// (the detail), and a back control flips back. `UIState.active-area` still names
-// the area, the row models are still the projections Rust hands over, and the
-// *field* slots (`org-field`, `org-field-edited`) still match the desktop, so a
-// keystroke of either build commits to the same place.
+// The desktop shell draws this as one card with three columns (the same design,
+// the same rows, the same header and footer). A phone has no width to split, so
+// this copy is a **single pane**: a top bar and either the rows or one row's
+// *self*, flipped by tapping a row. It keeps everything the desktop's copy
+// decided — the header with its count and the 列表/平铺 switch, the quick-add
+// line, the footer with the completed switch and 已完成 X / Y, the board, and the
+// same detail form — and it drops only what a touch surface cannot have.
 //
 // What this file deliberately drops, because it is a touch surface: every
-// hover-only affordance (`has-hover` fills, the `mouse-cursor` hints) and every
+// hover-only affordance (`has-hover` fills, the `mouse-cursor` hints), every
 // keyboard-only signal (no `↑↓/Enter`, no "Ctrl+Z" in the delete wording — the
-// notice band's text is Rust's, and its copy lives where the desktop's lives;
-// the undo it offers is the MobileBar's own action, not a chord). A row is
-// *tapped*, so there is nothing hover reveals.
+// notice band's text is Rust's; the undo it offers is the MobileBar's own action,
+// not a chord), and the quick-add's 回车创建 hint. A row is *tapped*, so there is
+// nothing hover reveals — which is why the row's ⋯ is always drawn here rather
+// than faded in, and why its tap target is a finger wide.
 //
 // The magic numbers are the same slots the desktop copy documents:
 //
 //   field slot (`org-field`, `org-field-edited`) break down exactly as there —
 //   these are the same values Rust understands (`ORG_FIELD_*`).
 //   tab 0 笔记 · 1 任务          (`UIState.org-tab`)
-//   smart view 0 收集箱 · 1 今天 · 2 近七天 · 3 全部 · 4 已完成 (`UIState.org-view`)
+//   view 0 收集箱 · 1 今天 · 2 近七天 · 3 全部 · 4 已完成 (`UIState.org-view`)
 //   sort 0 添加顺序 · 1 优先级 · 2 截止日期                      (`UIState.org-sort`)
+//   mode 0 列表 · 1 平铺                                       (`UIState.org-mode`)
 
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "../Theme.slint";
@@ -29,9 +31,9 @@ import { Colors } from "../Colors.slint";
 import { Typography } from "../Typography.slint";
 import { Icon } from "../Icons.slint";
 import { IconButton } from "./IconButton.slint";
-import { UIState } from "../Types.slint";
+import { UIState, BoardCard, BoardColumn, TaskRow } from "../Types.slint";
 
-// ---- local vocabulary (mirrors the desktop copy) ----
+// ---- local vocabulary (mirrors the desktop copy, at touch sizes) ----
 
 // One tappable button in a row (tabs, chips, sorts). `selected` is the one lit
 // state the whole area uses.
@@ -39,12 +41,16 @@ component OrgButton inherits Rectangle {
     in property <string> label;
     in property <bool> selected: false;
     in property <bool> accent: false;
+    in property <bool> danger: false;
     in property <int> color-slot: -1;   // >= 0 draws a palette dot before the label
+    in property <length> font-size: Typography.size-ui;
     callback clicked();
 
     height: 30px;                       // a finger target, not a mouse's 26px
     width: label-text.preferred-width + (color-slot >= 0 ? 32px : 20px);
     border-radius: Theme.radius-sm;
+    border-width: root.danger ? 1px : 0px;
+    border-color: Colors.danger;
     background: selected ? Colors.surface-selected : transparent;
     animate background { duration: Theme.duration-instant; }
 
@@ -62,11 +68,12 @@ component OrgButton inherits Rectangle {
         height: parent.height;
         text: root.label;
         font-family: Typography.ui-font;
-        font-size: Typography.size-ui;
+        font-size: root.font-size;
         horizontal-alignment: center;
         vertical-alignment: center;
-        color: root.selected ? Colors.text-primary
-            : (root.accent ? Colors.accent-text : Colors.text-secondary);
+        color: root.danger ? Colors.danger
+            : (root.selected ? Colors.text-primary
+            : (root.accent ? Colors.accent-text : Colors.text-secondary));
         overflow: elide;
     }
     ta := TouchArea {
@@ -85,15 +92,17 @@ component OrgField inherits Text {
     overflow: elide;
 }
 
-// The checkbox in front of a task and a checklist line.
+// The checkbox in front of a task and a checklist line. Round on a task row, the
+// way the desktop's is.
 component OrgCheck inherits Rectangle {
     in property <bool> checked: false;
     in property <length> box-size: 18px;
+    in property <bool> round: false;
     callback toggled();
 
     width: box-size;
     height: box-size;
-    border-radius: 5px;
+    border-radius: round ? box-size / 2 : 5px;
     background: checked ? Colors.accent : transparent;
     border-width: 1.5px;
     border-color: checked ? Colors.accent : Colors.border-strong;
@@ -125,6 +134,335 @@ component OrgMeta inherits Text {
     overflow: elide;
 }
 
+// One tag (or a list's name) as a pill.
+component OrgPill inherits Rectangle {
+    in property <string> text;
+    in property <color> tint: Colors.text-secondary;
+
+    height: 19px;
+    width: pill-text.preferred-width + 16px;
+    border-radius: 10px;
+    background: Colors.hover-fill;
+    pill-text := Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.text;
+        font-family: Typography.ui-font;
+        font-size: Typography.size-caption;
+        color: root.tint;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// A priority as the glyph the desktop uses: ▲ ◆ ▼. Four rows reading "高" is a
+// column of noise; the word belongs in the detail, where it is a choice.
+component OrgPrio inherits Text {
+    in property <int> slot: 0;
+    visible: root.slot > 0;
+    width: 16px;
+    horizontal-alignment: center;
+    vertical-alignment: center;
+    text: root.slot == 3 ? "▲" : (root.slot == 2 ? "◆" : "▼");
+    font-family: Typography.ui-font;
+    font-size: Typography.size-caption;
+    font-weight: Typography.weight-bold;
+    color: root.slot == 3 ? Colors.danger
+        : (root.slot == 2 ? Colors.accent-text : Colors.success);
+}
+
+// A deadline as a badge: boxed, so a date in a row of dates reads as one thing.
+component OrgDue inherits Rectangle {
+    in property <string> label;
+    in property <bool> overdue: false;
+    in property <bool> today: false;
+    visible: root.label != "";
+
+    height: 20px;
+    width: due-text.preferred-width + 14px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: root.overdue ? Colors.danger : Colors.border;
+    background: root.overdue ? Colors.danger.with-alpha(0.10) : transparent;
+    due-text := Text {
+        x: 7px;
+        width: parent.width - 14px;
+        height: parent.height;
+        text: root.label;
+        font-family: Typography.ui-font;
+        font-size: Typography.size-caption;
+        color: root.overdue ? Colors.danger
+            : (root.today ? Colors.accent-text : Colors.text-muted);
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+}
+
+// One task as the list paints it. 58 px rather than the desktop's 52: a finger
+// needs the height, and the two lines (title, pills) still have to fit.
+component OrgTaskRow inherits Rectangle {
+    in property <TaskRow> task;
+    callback toggled();
+    callback opened();
+    callback menu-requested();
+
+    height: 58px;
+    border-radius: Theme.radius-sm;
+    background: task.selected ? Colors.surface-selected : transparent;
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-sm;
+        padding-right: Theme.spacing-xs;
+        spacing: Theme.spacing-sm;
+        cross-axis-alignment: center;
+
+        OrgCheck {
+            checked: task.done;
+            box-size: 20px;
+            round: true;
+            toggled => { root.toggled(); }
+        }
+        VerticalLayout {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            max-width: 100000px;
+            alignment: center;
+            spacing: 3px;
+            Text {
+                text: task.title != "" ? task.title : "无标题";
+                font-family: Typography.ui-font;
+                font-size: Typography.size-ui;
+                color: task.done ? Colors.text-muted : Colors.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                visible: task.tag-list.length > 0 || task.list > 0
+                    || task.subtasks-total > 0;
+                height: 19px;
+                spacing: 6px;
+                if task.list > 0 : OrgPill {
+                    text: task.list-name;
+                    tint: Colors.block-text(task.list-color);
+                }
+                for tag[i] in task.tag-list : OrgPill { text: tag; }
+                if task.subtasks-total > 0 : Text {
+                    text: "☑ " + task.subtasks-done + "/" + task.subtasks-total;
+                    font-family: Typography.ui-font;
+                    font-size: Typography.size-caption;
+                    color: Colors.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        OrgPrio { slot: task.priority; }
+        OrgDue {
+            label: task.due-label;
+            overdue: task.overdue;
+            today: task.due == UIState.org-today;
+        }
+        // Always drawn, never faded in: a finger cannot hover, so a ⋯ that only a
+        // mouse reveals would be a menu no phone can open.
+        IconButton {
+            icon-name: "dots-horizontal";
+            icon-color: Colors.text-muted;
+            size: 30px;
+            clicked => { root.menu-requested(); }
+        }
+    }
+    ta := TouchArea {
+        clicked => { root.opened(); }
+    }
+}
+
+// The list's quick-add line. Enter commits — this is the one input in the area
+// that is *not* a 300 ms draft, because a created row is a step and half a row is
+// not.
+component OrgQuickAdd inherits Rectangle {
+    in property <string> placeholder;
+    in property <string> hint: "";
+    in-out property <string> value;
+    callback submitted();
+
+    height: 40px;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Colors.border;
+    background: Colors.background;
+
+    if root.value == "" : Text {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.placeholder;
+        font-family: Typography.ui-font;
+        font-size: Typography.size-ui;
+        color: Colors.text-muted;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    input := TextInput {
+        x: 11px;
+        y: 9px;
+        width: parent.width - 22px;
+        height: parent.height - 18px;
+        text <=> root.value;
+        single-line: true;
+        font-family: Typography.ui-font;
+        font-size: Typography.size-ui;
+        color: Colors.text-primary;
+        vertical-alignment: center;
+        selection-foreground-color: Colors.text-on-accent;
+        selection-background-color: Colors.selection;
+        accepted => { root.submitted(); }
+    }
+    ta := TouchArea {
+        clicked => { input.focus(); }
+    }
+}
+
+// One card of the board.
+component OrgBoardCard inherits Rectangle {
+    in property <BoardCard> card;
+    callback toggled();
+    callback opened();
+
+    height: card-text.preferred-height + (card.tag-list.length > 0 ? 26px : 0px) + 42px;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Colors.border;
+    background: Colors.surface;
+
+    VerticalLayout {
+        padding: Theme.spacing-sm;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: Theme.spacing-sm;
+            OrgCheck {
+                checked: card.done;
+                box-size: 18px;
+                toggled => { root.toggled(); }
+            }
+            card-text := Text {
+                text: card.title != "" ? card.title : "无标题";
+                font-family: Typography.ui-font;
+                font-size: Typography.size-ui;
+                color: Colors.text-primary;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            OrgPrio { slot: card.priority; }
+        }
+        if card.tag-list.length > 0 : HorizontalLayout {
+            height: 19px;
+            spacing: 6px;
+            for tag[i] in card.tag-list : OrgPill { text: tag; }
+        }
+        HorizontalLayout {
+            height: 20px;
+            spacing: 6px;
+            OrgDue {
+                label: card.due-label;
+                overdue: card.overdue;
+                today: card.due == UIState.org-today;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+    drag := DragArea {
+        enabled: true;
+        allow-move: true;
+        data: UIState.org-card-payload(card.id);
+        drag-finished => { UIState.org-drop-list = -2; }
+    }
+    ta := TouchArea {
+        clicked => { root.opened(); }
+    }
+}
+
+// One column of the board: the list, its count, its open tasks, and the ＋ line
+// that adds straight into it.
+component OrgBoardColumn inherits Rectangle {
+    in property <BoardColumn> column;
+    callback card-toggled(int);
+    callback card-opened(int);
+    callback added(string);
+    property <string> add-draft: "";
+
+    // 252 rather than the desktop's 232: a phone column holds a card whose title
+    // wraps, and two of them side by side is what a 400 dp screen shows.
+    min-width: 252px;
+    max-width: 252px;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: UIState.org-drop-list == column.id ? Colors.accent : Colors.border;
+    background: Colors.background;
+    animate border-color { duration: Theme.duration-fast; }
+
+    VerticalLayout {
+        padding: Theme.spacing-sm;
+        spacing: Theme.spacing-sm;
+        HorizontalLayout {
+            height: 24px;
+            spacing: Theme.spacing-sm;
+            if column.color >= 0 : Rectangle {
+                width: 9px;
+                height: 9px;
+                border-radius: 3px;
+                background: Colors.block-text(column.color);
+            }
+            Text {
+                text: column.name;
+                font-family: Typography.ui-font;
+                font-size: Typography.size-ui;
+                font-weight: Typography.weight-semibold;
+                color: Colors.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: column.count;
+                font-family: Typography.ui-font;
+                font-size: Typography.size-caption;
+                color: Colors.text-muted;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for entry[i] in column.cards : OrgBoardCard {
+                card: entry;
+                toggled => { root.card-toggled(entry.id); }
+                opened => { root.card-opened(entry.id); }
+            }
+        }
+        OrgQuickAdd {
+            placeholder: "＋ 添加任务";
+            value <=> root.add-draft;
+            submitted => {
+                if (root.add-draft != "") { root.added(root.add-draft); }
+                root.add-draft = "";
+            }
+        }
+    }
+    DropArea {
+        can-drop(event) => {
+            if (UIState.org-card-hover(event.data, column.id)) {
+                DragAction.move
+            } else {
+                DragAction.none
+            }
+        }
+        dropped(event) => {
+            UIState.org-card-dropped(event.data, column.id);
+            DragAction.move
+        }
+    }
+}
+
 // One text field. No border until it has focus; no hover exists on a touch
 // screen, so the rest of the time it is bare.
 component OrgInput inherits Rectangle {
@@ -143,12 +481,10 @@ component OrgInput inherits Rectangle {
     horizontal-stretch: root.grow ? 1 : 0;
     height: multiline
         ? max(root.hint-height, inner.preferred-height + 14px)
-        : max(root.hint-height, 38px);
+        : max(root.hint-height, 40px);
     border-radius: Theme.radius-sm;
     background: inner.has-focus ? Colors.background : transparent;
 
-    // The placeholder, under the input (a TextInput has none, and an empty field
-    // with no hint is a field nobody knows what to type into).
     if root.value == "" : Text {
         x: 10px;
         y: 6px;
@@ -172,20 +508,74 @@ component OrgInput inherits Rectangle {
         font-size: root.font-size;
         color: Colors.text-primary;
         selection-foreground-color: Colors.text-on-accent;
-        selection-background-color: Colors.selection;
+        selection-background-color: Colors.background;
         edited => { root.edited(); }
     }
 }
 
 // ── the list ─────────────────────────────────────────────────────────────────
 component ListPane inherits Rectangle {
-    // The smart views' words, in Rust's slot order (see the desktop copy).
-    property <[string]> smart-names: ["收集箱", "今天", "近七天", "全部", "已完成"];
+    // The smart views' words, in Rust's slot order (the desktop's nav rows carry
+    // the same list; a phone has no room for a column of rows, so they are chips
+    // here — the *slots* are what the two copies agree on).
+    property <[string]> smart-names: ["收集箱", "今天", "近七天", "全部"];
+    property <[string]> sort-names: ["添加顺序", "优先级", "截止日期"];
 
     VerticalLayout {
         padding-left: Theme.spacing-sm;
         padding-right: Theme.spacing-sm;
-        spacing: 2px;
+        padding-bottom: Theme.spacing-sm;
+        spacing: Theme.spacing-sm;
+
+        // the header: what is showing, how many, and the two ways of looking at
+        // it
+        HorizontalLayout {
+            height: 32px;
+            spacing: Theme.spacing-sm;
+            Text {
+                text: UIState.org-view-title;
+                font-family: Typography.ui-font;
+                font-size: Typography.size-ui-lg;
+                font-weight: Typography.weight-semibold;
+                color: Colors.text-primary;
+                vertical-alignment: center;
+            }
+            Text {
+                text: UIState.org-view-count-label;
+                font-family: Typography.ui-font;
+                font-size: Typography.size-caption;
+                color: Colors.text-muted;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if UIState.org-tab == 1 : Rectangle {
+                min-width: 108px;
+                max-width: 108px;
+                height: 32px;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Colors.border;
+                clip: true;
+                HorizontalLayout {
+                    for label[i] in ["列表", "平铺"] : Rectangle {
+                        background: UIState.org-mode == i
+                            ? Colors.surface-selected : transparent;
+                        Text {
+                            text: label;
+                            font-family: Typography.ui-font;
+                            font-size: Typography.size-caption;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            color: UIState.org-mode == i
+                                ? Colors.text-primary : Colors.text-muted;
+                        }
+                        TouchArea {
+                            clicked => { UIState.org-mode-picked(i); }
+                        }
+                    }
+                }
+            }
+        }
 
         // one needle for the tab that is showing
         OrgInput {
@@ -194,24 +584,55 @@ component ListPane inherits Rectangle {
             edited => { UIState.org-query-changed(); }
         }
 
+        // ── 笔记: 全部, then the tags the notes carry ────────────────────────
+        if UIState.org-tab == 0 : Rectangle {
+            height: 32px;
+            clip: true;
+            HorizontalLayout {
+                height: 32px;
+                spacing: 2px;
+                OrgButton {
+                    label: "全部笔记";
+                    color-slot: 0;
+                    selected: UIState.org-tag == "";
+                    clicked => { UIState.org-tag-picked(""); }
+                }
+                for tag[i] in UIState.org-tag-rows : OrgButton {
+                    label: tag.name + " " + tag.count;
+                    selected: UIState.org-tag == tag.name;
+                    clicked => { UIState.org-tag-picked(tag.name); }
+                }
+            }
+        }
+
+        // ── 任务: the smart views, then the lists, then the sorts ───────────
         if UIState.org-tab == 1 : VerticalLayout {
             spacing: 2px;
 
-            HorizontalLayout {
-                height: 30px;
-                spacing: 2px;
-                for name[idx] in root.smart-names : OrgButton {
-                    label: name;
-                    selected: UIState.org-list < 0 && UIState.org-view == idx;
-                    clicked => { UIState.org-view-picked(idx); }
+            Rectangle {
+                height: 32px;
+                clip: true;
+                HorizontalLayout {
+                    height: 32px;
+                    spacing: 2px;
+                    for name[idx] in root.smart-names : OrgButton {
+                        label: name + " " + UIState.org-smart-counts[idx];
+                        selected: UIState.org-list < 0 && UIState.org-view == idx;
+                        clicked => { UIState.org-view-picked(idx); }
+                    }
+                    OrgButton {
+                        label: "已完成 " + UIState.org-smart-counts[4];
+                        selected: UIState.org-list < 0 && UIState.org-view == 4;
+                        clicked => { UIState.org-view-picked(4); }
+                    }
                 }
             }
 
             Rectangle {
-                height: 30px;
+                height: 32px;
                 clip: true;
                 HorizontalLayout {
-                    height: 30px;
+                    height: 32px;
                     spacing: 2px;
                     for entry[idx] in UIState.task-list-rows : OrgButton {
                         label: entry.name + (entry.count > 0 ? " " + entry.count : "");
@@ -221,48 +642,55 @@ component ListPane inherits Rectangle {
                             : entry.smart;
                         clicked => { UIState.org-list-picked(entry.id); }
                     }
+                    OrgButton {
+                        label: "＋ 新建清单";
+                        accent: true;
+                        clicked => { UIState.org-list-created(); }
+                    }
                 }
             }
 
-            HorizontalLayout {
-                height: 30px;
-                spacing: 2px;
-                OrgField { name: "排序"; width: 34px; }
-                OrgButton {
-                    label: "添加顺序";
-                    selected: UIState.org-sort == 0;
-                    clicked => { UIState.org-sort-picked(0); }
-                }
-                OrgButton {
-                    label: "优先级";
-                    selected: UIState.org-sort == 1;
-                    clicked => { UIState.org-sort-picked(1); }
-                }
-                OrgButton {
-                    label: "截止日期";
-                    selected: UIState.org-sort == 2;
-                    clicked => { UIState.org-sort-picked(2); }
-                }
-                Rectangle { horizontal-stretch: 1; width: 0px; }
-                OrgButton {
-                    label: "＋清单";
-                    accent: true;
-                    clicked => { UIState.org-list-created(); }
+            Rectangle {
+                height: 32px;
+                clip: true;
+                HorizontalLayout {
+                    height: 32px;
+                    spacing: 2px;
+                    OrgField { name: "排序"; width: 36px; }
+                    for name[i] in root.sort-names : OrgButton {
+                        label: name;
+                        font-size: Typography.size-caption;
+                        selected: UIState.org-sort == i;
+                        clicked => { UIState.org-sort-picked(i); }
+                    }
                 }
             }
         }
 
-        Rectangle { height: Theme.spacing-xs; }
+        // ── 平铺: the board, one column per list ────────────────────────────
+        if UIState.org-tab == 1 && UIState.org-mode == 1 : ScrollView {
+            horizontal-stretch: 1;
+            max-width: 100000px;
+            vertical-stretch: 1;
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                for col[i] in UIState.org-board : OrgBoardColumn {
+                    column: col;
+                    card-toggled(id) => { UIState.org-task-done-toggled(id); }
+                    card-opened(id) => { UIState.org-task-selected(id); }
+                    added(title) => { UIState.org-task-add-to(col.id, title); }
+                }
+                Rectangle { width: 1px; }
+            }
+        }
 
+        // ── 笔记: the rows ─────────────────────────────────────────────────
         if UIState.org-tab == 0 : ListView {
             vertical-stretch: 1;
-            for row[idx] in UIState.note-rows : Rectangle {
-                // title + excerpt + the tags/age line; 54 px holds them (the
-                // desktop's 58 px is the taller sibling only because the pane is
-                // narrower there). A row is 44 dp of tappable height.
-                height: 62px;
+            for entry[i] in UIState.note-rows : Rectangle {
+                height: 66px;
                 border-radius: Theme.radius-sm;
-                background: row.selected ? Colors.surface-selected : transparent;
+                background: entry.selected ? Colors.surface-selected : transparent;
 
                 VerticalLayout {
                     padding: Theme.spacing-sm;
@@ -270,7 +698,7 @@ component ListPane inherits Rectangle {
                     HorizontalLayout {
                         height: 20px;
                         spacing: Theme.spacing-xs;
-                        if row.pinned : Icon {
+                        if entry.pinned : Icon {
                             width: 14px;
                             height: 14px;
                             size: 14px;
@@ -278,99 +706,78 @@ component ListPane inherits Rectangle {
                             color: Colors.accent-text;
                         }
                         Text {
-                            text: row.title != "" ? row.title : "无标题";
+                            text: entry.title != "" ? entry.title : "无标题";
                             font-family: Typography.ui-font;
                             font-size: Typography.size-ui;
+                            font-weight: Typography.weight-semibold;
                             color: Colors.text-primary;
                             vertical-alignment: center;
                             overflow: elide;
                         }
                     }
                     Text {
-                        text: row.excerpt;
+                        text: entry.excerpt;
                         font-family: Typography.ui-font;
                         font-size: Typography.size-caption;
                         color: Colors.text-muted;
                         overflow: elide;
                     }
-                    OrgMeta { tags: row.tags; when: row.when; height: 16px; }
+                    OrgMeta { tags: entry.tags; when: entry.when; height: 16px; }
                 }
                 note-ta := TouchArea {
-                    clicked => { UIState.org-note-selected(row.id); }
+                    clicked => { UIState.org-note-selected(entry.id); }
                 }
             }
         }
 
-        if UIState.org-tab == 1 : ListView {
+        // ── 任务: the quick-add, the rows, and the footer under them ────────
+        if UIState.org-tab == 1 && UIState.org-mode == 0 : VerticalLayout {
             vertical-stretch: 1;
-            for row[idx] in UIState.task-rows : Rectangle {
-                // 44 dp task rows: the one number the touch design calls for
-                height: 44px;
-                border-radius: Theme.radius-sm;
-                background: row.selected ? Colors.surface-selected : transparent;
+            spacing: Theme.spacing-sm;
 
-                HorizontalLayout {
-                    padding-left: Theme.spacing-sm;
-                    padding-right: Theme.spacing-sm;
-                    spacing: Theme.spacing-sm;
-                    cross-axis-alignment: center;
+            OrgQuickAdd {
+                placeholder: "添加任务到「" + UIState.org-view-title + "」";
+                value <=> UIState.org-quick-add;
+                submitted => { UIState.org-quick-add-submitted(); }
+            }
 
-                    OrgCheck {
-                        checked: row.done;
-                        box-size: 16px;
-                        toggled => { UIState.org-task-done-toggled(row.id); }
-                    }
-                    if row.priority > 0 : Rectangle {
-                        width: 4px;
-                        height: 16px;
-                        border-radius: 2px;
-                        background: row.priority == 3 ? Colors.block-text(9)
-                            : (row.priority == 2 ? Colors.block-text(3)
-                            : Colors.block-text(6));
-                    }
-                    Text {
-                        text: row.title != "" ? row.title : "无标题";
-                        font-family: Typography.ui-font;
-                        font-size: Typography.size-ui;
-                        color: row.done ? Colors.text-muted : Colors.text-primary;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                    if row.subtasks-total > 0 : Text {
-                        text: row.subtasks-done + "/" + row.subtasks-total;
-                        font-family: Typography.ui-font;
-                        font-size: Typography.size-caption;
-                        color: Colors.text-muted;
-                        vertical-alignment: center;
-                    }
-                    Rectangle { horizontal-stretch: 1; width: 0px; }
-                    if row.tags != "" : Text {
-                        text: row.tags;
-                        font-family: Typography.ui-font;
-                        font-size: Typography.size-caption;
-                        color: Colors.text-muted;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                    if row.list > 0 : Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: Colors.block-text(row.list-color);
-                    }
-                    if row.due-label != "" : Text {
-                        text: row.due-label;
-                        font-family: Typography.ui-font;
-                        font-size: Typography.size-caption;
-                        color: row.overdue ? Colors.danger
-                            : (row.due == UIState.org-today
-                                ? Colors.accent-text
-                                : Colors.text-muted);
-                        vertical-alignment: center;
-                    }
+            ListView {
+                vertical-stretch: 1;
+                for entry[i] in UIState.task-rows : OrgTaskRow {
+                    task: entry;
+                    toggled => { UIState.org-task-done-toggled(entry.id); }
+                    opened => { UIState.org-task-selected(entry.id); }
+                    menu-requested => { UIState.org-task-menu-requested(entry.id, 0px, 0px); }
                 }
-                task-ta := TouchArea {
-                    clicked => { UIState.org-task-selected(row.id); }
+            }
+
+            // the footer: the switch that reveals the finished ones, and the
+            // whole area's progress
+            Rectangle {
+                height: 34px;
+                Rectangle {
+                    y: 0;
+                    height: 1px;
+                    width: parent.width;
+                    background: Colors.divider;
+                }
+                HorizontalLayout {
+                    height: parent.height;
+                    spacing: Theme.spacing-sm;
+                    OrgButton {
+                        label: (UIState.org-show-done ? "隐藏已完成 (" : "显示已完成 (")
+                            + UIState.org-done-count + ")";
+                        clicked => { UIState.org-show-done-toggled(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text {
+                        text: "已完成 " + UIState.org-done-count + " / "
+                            + UIState.org-total-count;
+                        font-family: Typography.ui-font;
+                        font-size: Typography.size-caption;
+                        color: Colors.text-muted;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
@@ -417,7 +824,7 @@ component DetailPane inherits Rectangle {
                 }
 
                 HorizontalLayout {
-                    height: 38px;
+                    height: 40px;
                     spacing: Theme.spacing-sm;
                     OrgField { name: "标签"; width: 38px; }
                     OrgInput {
@@ -427,7 +834,7 @@ component DetailPane inherits Rectangle {
                     }
                 }
 
-                OrgField { name: UIState.org-note-detail.when; height: 18px; }
+                OrgField { name: UIState.org-note-detail.when; height: 20px; }
 
                 OrgInput {
                     placeholder: "正文";
@@ -442,12 +849,13 @@ component DetailPane inherits Rectangle {
                 spacing: Theme.spacing-sm;
 
                 HorizontalLayout {
-                    height: 40px;
+                    height: 42px;
                     spacing: Theme.spacing-sm;
                     cross-axis-alignment: center;
                     OrgCheck {
                         checked: UIState.org-task-detail.done;
-                        box-size: 20px;
+                        box-size: 22px;
+                        round: true;
                         toggled => { UIState.org-task-done-toggled(UIState.org-task-detail.id); }
                     }
                     OrgInput {
@@ -464,40 +872,73 @@ component DetailPane inherits Rectangle {
                     }
                 }
 
+                // The four choice rows are boxed the way the desktop's are: a
+                // page of loose chips is a page of floating words.
                 HorizontalLayout {
-                    height: 30px;
+                    height: 34px;
                     spacing: Theme.spacing-sm;
-                    OrgField { name: "清单"; width: 38px; }
-                    for entry[idx] in UIState.task-list-rows : OrgButton {
-                        label: entry.name;
-                        color-slot: entry.smart ? -1 : entry.color;
-                        selected: entry.smart
-                            ? UIState.org-task-detail.list <= 0
-                            : UIState.org-task-detail.list == entry.id;
-                        clicked => {
-                            UIState.org-task-list-set(UIState.org-task-detail.id,
-                                entry.smart ? -1 : entry.id);
+                    OrgField { name: "清单"; width: 40px; }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        max-width: 100000px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Colors.border;
+                        clip: true;
+                        HorizontalLayout {
+                            padding-left: 3px;
+                            padding-right: 3px;
+                            spacing: 2px;
+                            for entry[idx] in UIState.task-list-rows : OrgButton {
+                                label: entry.name;
+                                color-slot: entry.smart ? -1 : entry.color;
+                                font-size: Typography.size-caption;
+                                selected: entry.smart
+                                    ? UIState.org-task-detail.list <= 0
+                                    : UIState.org-task-detail.list == entry.id;
+                                clicked => {
+                                    UIState.org-task-list-set(UIState.org-task-detail.id,
+                                        entry.smart ? -1 : entry.id);
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
                         }
                     }
                 }
 
                 HorizontalLayout {
-                    height: 30px;
+                    height: 34px;
                     spacing: Theme.spacing-sm;
-                    OrgField { name: "优先级"; width: 38px; }
-                    for name[idx] in root.priority-names : OrgButton {
-                        label: name;
-                        selected: UIState.org-task-detail.priority == idx;
-                        clicked => {
-                            UIState.org-task-priority-set(UIState.org-task-detail.id, idx);
+                    OrgField { name: "优先级"; width: 40px; }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        max-width: 100000px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Colors.border;
+                        clip: true;
+                        HorizontalLayout {
+                            padding-left: 3px;
+                            padding-right: 3px;
+                            spacing: 2px;
+                            for name[idx] in root.priority-names : OrgButton {
+                                label: name;
+                                font-size: Typography.size-caption;
+                                selected: UIState.org-task-detail.priority == idx;
+                                clicked => {
+                                    UIState.org-task-priority-set(
+                                        UIState.org-task-detail.id, idx);
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
                         }
                     }
                 }
 
                 HorizontalLayout {
-                    height: 38px;
+                    height: 40px;
                     spacing: Theme.spacing-sm;
-                    OrgField { name: "截止"; width: 38px; }
+                    OrgField { name: "截止"; width: 40px; }
                     OrgInput {
                         placeholder: "YYYY-MM-DD";
                         grow: false;
@@ -506,13 +947,14 @@ component DetailPane inherits Rectangle {
                     }
                     OrgButton {
                         label: "今天";
+                        selected: UIState.org-task-detail.due == UIState.org-today;
                         clicked => {
                             UIState.org-task-due-set(UIState.org-task-detail.id,
                                 UIState.org-task-detail.due == UIState.org-today
                                     ? "" : UIState.org-today);
                         }
                     }
-                    OrgButton {
+                    if UIState.org-task-detail.due != "" : OrgButton {
                         label: "清除";
                         clicked => { UIState.org-task-due-set(UIState.org-task-detail.id, ""); }
                     }
@@ -526,95 +968,41 @@ component DetailPane inherits Rectangle {
                 }
 
                 HorizontalLayout {
-                    height: 30px;
+                    height: 34px;
                     spacing: Theme.spacing-sm;
-                    OrgField { name: "重复"; width: 38px; }
-                    for name[idx] in root.repeat-names : OrgButton {
-                        label: name;
-                        selected: UIState.org-task-detail.repeat == idx;
-                        clicked => {
-                            UIState.org-task-repeat-set(UIState.org-task-detail.id, idx);
+                    OrgField { name: "重复"; width: 40px; }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        max-width: 100000px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Colors.border;
+                        clip: true;
+                        HorizontalLayout {
+                            padding-left: 3px;
+                            padding-right: 3px;
+                            spacing: 2px;
+                            for name[idx] in root.repeat-names : OrgButton {
+                                label: name;
+                                font-size: Typography.size-caption;
+                                selected: UIState.org-task-detail.repeat == idx;
+                                clicked => {
+                                    UIState.org-task-repeat-set(UIState.org-task-detail.id, idx);
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
                         }
                     }
                 }
 
                 HorizontalLayout {
-                    height: 38px;
+                    height: 40px;
                     spacing: Theme.spacing-sm;
-                    OrgField { name: "标签"; width: 38px; }
+                    OrgField { name: "标签"; width: 40px; }
                     OrgInput {
                         placeholder: "用逗号分隔";
                         value <=> UIState.org-task-tags-draft;
                         edited => { UIState.org-field-edited(6); }
-                    }
-                }
-
-                HorizontalLayout {
-                    height: 30px;
-                    spacing: Theme.spacing-sm;
-                    OrgField { name: "子任务"; width: 38px; }
-                    OrgButton {
-                        label: "＋添加";
-                        accent: true;
-                        clicked => { UIState.org-subtask-added(UIState.org-task-detail.id); }
-                    }
-                    OrgField {
-                        name: UIState.org-task-detail.subtasks-done + "/"
-                            + UIState.org-task-detail.subtasks-total;
-                        width: 56px;
-                    }
-                }
-
-                if UIState.org-task-detail.subtasks-total > 0 : ListView {
-                    height: min(UIState.org-task-detail.subtasks.length, 6) * 40px;
-                    for sub[idx] in UIState.org-task-detail.subtasks : Rectangle {
-                        height: 40px;
-                        HorizontalLayout {
-                            spacing: Theme.spacing-sm;
-                            cross-axis-alignment: center;
-                            OrgCheck {
-                                checked: sub.done;
-                                box-size: 16px;
-                                toggled => {
-                                    UIState.org-subtask-done-toggled(
-                                        UIState.org-task-detail.id, sub.id, !sub.done);
-                                }
-                            }
-                            if UIState.org-field == 7
-                                && UIState.org-field-sub == sub.id : OrgInput {
-                                placeholder: "子任务";
-                                value <=> UIState.org-subtask-draft;
-                                edited => { UIState.org-field-edited(7); }
-                            }
-                            if UIState.org-field != 7
-                                || UIState.org-field-sub != sub.id : Text {
-                                text: sub.title != "" ? sub.title : "子任务";
-                                font-family: Typography.ui-font;
-                                font-size: Typography.size-ui;
-                                color: sub.done ? Colors.text-muted : Colors.text-primary;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                            IconButton {
-                                icon-name: "x";
-                                size: 26px;
-                                clicked => {
-                                    UIState.org-subtask-deleted(UIState.org-task-detail.id, sub.id);
-                                }
-                            }
-                        }
-                        sub-ta := TouchArea {
-                            // the title's own strip: the box and the ✕ are separate
-                            // controls beside it, and a hit area over the whole row
-                            // would swallow both
-                            x: 26px;
-                            y: 0;
-                            width: parent.width - 56px;
-                            height: parent.height;
-                            clicked => {
-                                UIState.org-subtask-edit(UIState.org-task-detail.id, sub.id);
-                            }
-                        }
                     }
                 }
 
@@ -625,6 +1013,106 @@ component DetailPane inherits Rectangle {
                     hint-height: 120px;
                     value <=> UIState.org-task-notes-draft;
                     edited => { UIState.org-field-edited(5); }
+                }
+
+                // the checklist: its own box, with the ＋ line inside it
+                VerticalLayout {
+                    spacing: 0px;
+                    OrgField { name: "子任务"; height: 20px; }
+                    Rectangle {
+                        min-height: 152px;
+                        max-height: 152px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Colors.border;
+                        VerticalLayout {
+                            padding: Theme.spacing-xs;
+                            spacing: 0px;
+                            ListView {
+                                vertical-stretch: 1;
+                                for sub[idx] in UIState.org-task-detail.subtasks : Rectangle {
+                                    height: 44px;
+                                    HorizontalLayout {
+                                        spacing: Theme.spacing-sm;
+                                        cross-axis-alignment: center;
+                                        padding-left: Theme.spacing-xs;
+                                        OrgCheck {
+                                            checked: sub.done;
+                                            box-size: 18px;
+                                            toggled => {
+                                                UIState.org-subtask-done-toggled(
+                                                    UIState.org-task-detail.id,
+                                                    sub.id, !sub.done);
+                                            }
+                                        }
+                                        if UIState.org-field == 7
+                                            && UIState.org-field-sub == sub.id : OrgInput {
+                                            placeholder: "子任务";
+                                            value <=> UIState.org-subtask-draft;
+                                            edited => { UIState.org-field-edited(7); }
+                                        }
+                                        if UIState.org-field != 7
+                                            || UIState.org-field-sub != sub.id : Text {
+                                            text: sub.title != "" ? sub.title : "子任务";
+                                            font-family: Typography.ui-font;
+                                            font-size: Typography.size-ui;
+                                            color: sub.done
+                                                ? Colors.text-muted : Colors.text-primary;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        IconButton {
+                                            icon-name: "x";
+                                            size: 28px;
+                                            clicked => {
+                                                UIState.org-subtask-deleted(
+                                                    UIState.org-task-detail.id, sub.id);
+                                            }
+                                        }
+                                    }
+                                    sub-ta := TouchArea {
+                                        x: 30px;
+                                        y: 0;
+                                        width: parent.width - 62px;
+                                        height: parent.height;
+                                        clicked => {
+                                            UIState.org-subtask-edit(
+                                                UIState.org-task-detail.id, sub.id);
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                height: 32px;
+                                HorizontalLayout {
+                                    spacing: Theme.spacing-xs;
+                                    padding-left: Theme.spacing-xs;
+                                    OrgButton {
+                                        label: "＋ 添加子任务";
+                                        accent: true;
+                                        font-size: Typography.size-caption;
+                                        clicked => {
+                                            UIState.org-subtask-added(
+                                                UIState.org-task-detail.id);
+                                        }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    OrgField {
+                                        name: UIState.org-task-detail.subtasks-done + "/"
+                                            + UIState.org-task-detail.subtasks-total;
+                                        width: 40px;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                OrgButton {
+                    height: 38px;
+                    label: "删除任务";
+                    danger: true;
+                    clicked => { UIState.org-task-deleted(UIState.org-task-detail.id); }
                 }
             }
         }
@@ -657,7 +1145,7 @@ export component OrganizerArea inherits Rectangle {
 
                 if in-detail : IconButton {
                     icon-name: "chevron-left";
-                    size: 30px;
+                    size: 32px;
                     clicked => {
                         // back to the list = deselect the open row
                         if (UIState.org-tab == 0) {
@@ -678,10 +1166,10 @@ export component OrganizerArea inherits Rectangle {
                     selected: UIState.org-tab == 1 && !in-detail;
                     clicked => { UIState.org-open-requested(1); }
                 }
-                Rectangle { horizontal-stretch: 1; width: 0px; }
+                Rectangle { horizontal-stretch: 1; }
                 IconButton {
                     icon-name: "plus";
-                    size: 30px;
+                    size: 32px;
                     clicked => {
                         if (UIState.org-tab == 0) {
                             UIState.org-note-create();

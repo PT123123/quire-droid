@@ -473,6 +473,14 @@ export struct TaskListRow {
     smart: bool,          // true for the inbox: the chip the *view* half owns
 }
 
+// One tag the notes carry, as the 笔记 tab's nav column lists it. The name *is*
+// the filter — a note's tags are free strings, not rows, so there is nothing to
+// point at.
+export struct TagRow {
+    name: string,
+    count: int,
+}
+
 // One task: the list row and the detail panel's row again. `priority` and
 // `repeat` are the enums' slots and `color` a palette slot, so the UI names them
 // in its own language instead of Rust shipping words for a menu.
@@ -487,7 +495,8 @@ export struct TaskRow {
     list: int,
     list-name: string,
     list-color: int,
-    tags: string,
+    tags: string,         // already joined, for the detail panel's own input
+    tag-list: [string],   // and one entry per pill, for the row
     notes: string,
     repeat: int,          // Repeat slot
     subtasks: [SubtaskRow],
@@ -495,6 +504,35 @@ export struct TaskRow {
     subtasks-total: int,
     when: string,
     selected: bool,
+}
+
+// One card of the board (平铺) view. Deliberately *not* a `TaskRow`: a card is
+// only ever painted inside a column, so it carries the six things a card draws
+// and none of the detail panel's fields — and nesting `TaskRow`'s own
+// `[SubtaskRow]` inside a `[BoardColumn]` would be an array of arrays for
+// nothing.
+export struct BoardCard {
+    id: int,
+    title: string,
+    tag-list: [string],
+    priority: int,        // Priority slot
+    due: string,
+    due-label: string,
+    overdue: bool,
+    done: bool,
+    subtasks-done: int,
+    subtasks-total: int,
+}
+
+// One column of the board: a list, and the open tasks filed under it. The inbox
+// is a column like any other (`id` -1), because a board that dropped the tasks
+// with no list would drop exactly the ones the inbox exists to hold.
+export struct BoardColumn {
+    id: int,              // -1 = 收集箱 (the sentinel), else a stored list's id
+    name: string,
+    color: int,           // ColorKind slot for the head's dot
+    count: int,
+    cards: [BoardCard],
 }
 
 // The one place transient UI state lives. Components read/write it directly;
@@ -1165,9 +1203,39 @@ export global UIState {
     in-out property <int> org-list: -1;           // stored list id, -1 = the chip decides
     in-out property <string> org-query: "";
     in-out property <int> org-sort: 0;            // 0 添加顺序, 1 优先级, 2 截止日期
+    // Which of the two views the toolbar's segmented control is on: 0 列表,
+    // 1 平铺. Session state like everything else here (ADR-0073).
+    in-out property <int> org-mode: 0;
+    // Whether finished tasks are painted beside the open ones. The 已完成 view
+    // ignores it: asking for the finished ones is not the same question.
+    in-out property <bool> org-show-done: false;
+    // The nav column's five counts, in the smart views' own slot order, and the
+    // header's two numbers. Rust computes them from the catalog so the nav, the
+    // header and the footer can never disagree about how many tasks there are.
+    in-out property <[int]> org-smart-counts: [0, 0, 0, 0, 0];
+    // The header's own words. Both come from Rust because both are counts, and a
+    // count spelled in a delegate is a second definition of the filter that
+    // produced it: "2 项待办" over a list, "4 条笔记" over the notes.
+    in-out property <string> org-view-title: "";
+    in-out property <string> org-view-count-label: "";
+    in-out property <int> org-done-count: 0;
+    in-out property <int> org-total-count: 0;
+    // The quick-add line's own draft. One live input at a time, and this is the
+    // list's: it is committed on Enter, not on blur.
+    in-out property <string> org-quick-add: "";
+    // Which column a board card is hovering, so the column can light up: -2 is
+    // "no drag", -1 the inbox column, else a list id. Session state, and the
+    // board's only drag feedback — the payload itself is Rust's (`block`'s
+    // drag-reorder teaches the same lesson: a delegate never parses a payload).
+    in-out property <int> org-drop-list: -2;
     in-out property <[NoteRow]> note-rows;
     in-out property <[TaskRow]> task-rows;
     in-out property <[TaskListRow]> task-list-rows;
+    in-out property <[BoardColumn]> org-board;
+    // The 笔记 tab's tag column and its filter. `org-tag` is "" for 全部笔记;
+    // a tag is a free string on the note, so the filter compares it as one.
+    in-out property <[TagRow]> org-tag-rows;
+    in-out property <string> org-tag: "";
     // The selected row's *whole* self, so the detail panel binds fields instead
     // of looking a row up in a model: `id` is -1 when nothing is selected, and
     // every other field is then whatever the empty row says.
@@ -1216,6 +1284,8 @@ export global UIState {
     callback org-note-pin-toggled(int);
     callback org-note-tags-set(int, string);
     callback org-note-deleted(int);
+    // the 笔记 tab's tag column: "" is 全部笔记
+    callback org-tag-picked(string);
     // tasks: the row's own switches are immediate, the text fields commit on blur
     callback org-task-create();
     callback org-task-selected(int);
@@ -1228,6 +1298,24 @@ export global UIState {
     callback org-task-tags-set(int, string);
     callback org-task-list-set(int, int); // task, list id (-1 = 收集箱)
     callback org-task-deleted(int);
+    // the row's ⋯: the task, and where the pointer was, so the shared context
+    // menu can be anchored the way the page tree's is
+    callback org-task-menu-requested(int, length, length);
+    // the list column's quick-add line: committed on Enter, and the task lands
+    // in whichever list the view is showing (a smart view means 收集箱)
+    callback org-quick-add-submitted();
+    // the board: a card dropped on a column moves that task into the column's
+    // list (-1 = 收集箱), and a column's own ＋ line adds straight into it
+    callback org-task-moved(int, int);
+    callback org-task-add-to(int, string);
+    // the board's drag, as the block handle and the page tree do it: Rust packs
+    // the payload, the delegate only hands it back
+    pure callback org-card-payload(int) -> data-transfer;
+    pure callback org-card-hover(data-transfer, int) -> bool;
+    callback org-card-dropped(data-transfer, int);
+    // the toolbar's segmented control and the footer's completed switch
+    callback org-mode-picked(int);
+    callback org-show-done-toggled();
     callback org-subtask-added(int);
     callback org-subtask-edit(int, int); // task, subtask: start editing that line's title
     callback org-subtask-title-set(int, int, string);

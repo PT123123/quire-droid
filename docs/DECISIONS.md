@@ -2,6 +2,47 @@
 
 Format: decision → context → consequences. Newest first.
 
+## ADR-0105 · A growing container says min/max *plus* stretch, and this copy is the desktop's page at touch sizes
+
+Decision: this shell's organizer keeps its single pane (ADR-0104) and takes
+everything else from the desktop's redesign — the header with its count and the
+列表/平铺 switch, the quick-add line, the footer with the completed switch and
+已完成 X / Y, the richer rows, the board, the tag column — at touch geometry. And
+every container here that takes the leftover width says
+`horizontal-stretch: 1; max-width: 100000px;` rather than either alone.
+
+Why the rule first, because it is the part that is easy to get wrong twice:
+`horizontal-stretch: 1` alone does **not** grow a `Rectangle` whose content is a
+layout — such a Rectangle takes its `max-width` from that layout's preferred
+width, so the stretch factor has no ceiling-free room to distribute. The desktop
+found this by rendering an 885 px page where a 1280 px one was meant, with the
+detail panel at x = 677 and every task title elided to "今天…"; this copy is the
+same file's vocabulary, so it inherits the same rule. `OrgInput` had already
+learned it for its growing fields.
+
+Why the shape: a phone cannot show three columns, so the *panes* stay one — but
+the desktop's page is not three panes, it is one card with chrome (a header, a
+quick-add, a footer) and rows, and that is exactly what fits a phone. The board
+fits too: two columns' worth of a horizontally scrolling canvas is a familiar
+phone gesture, and the plus line in each column is a better "add here" than a
+dialog.
+
+Consequences:
+
+- **The row's ⋯ is always drawn here**, never faded in on hover: a finger cannot
+  hover, so an affordance only a mouse reveals is an affordance no phone has.
+  The desktop's row can afford the fade because a mouse exists there.
+- **The context menu this opens is centred, not anchored.** The desktop anchors
+  it under the button it came from; a 184 px popup pinned to a touch point sits
+  half off a 400 dp screen. The two shells share the rows and the ids, not the
+  placement.
+- **Sizes are this copy's own** (task row 58 dp, board column 252 px, buttons
+  30 px) — the desktop's numbers are a mouse's. A number that both copies share
+  is a *slot* (a field id, a view index), never a length.
+- **The quick-add's 回车创建 hint is not passed here.** It is a property on the
+  shared component, empty in this copy, which is how "no keyboard hint on touch"
+  stays one component instead of two files that drift.
+
 ## ADR-0104 · This shell's organizer is one pane, and the back control is a deselect
 
 Decision: `quire-droid`'s `OrganizerArea.slint` is a **single pane**, not the two the

@@ -40,7 +40,7 @@ use crate::services::search_service::SearchService;
 use crate::storage::search_index::SearchRequest;
 use crate::storage::SqliteRepository;
 use crate::storage::versions;
-use crate::{BacklinkRow, BlockRow, ColumnBox, ColumnItem, CommandRow, DbCell, DbColumn, DbOption, DbRow, DbViewTab, DiffRow, MenuRow, NoteRow, SearchRow, SidebarNode, SlashRow, SubtaskRow, TableCell, TaskListRow, TaskRow, TextRun, TocEntry, VersionRow};
+use crate::{BacklinkRow, BlockRow, BoardCard, BoardColumn, ColumnBox, ColumnItem, CommandRow, DbCell, DbColumn, DbOption, DbRow, DbViewTab, DiffRow, MenuRow, NoteRow, SearchRow, SidebarNode, SlashRow, SubtaskRow, TableCell, TagRow, TaskListRow, TaskRow, TextRun, TocEntry, VersionRow};
 use slint::{Model, ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -287,6 +287,17 @@ pub struct AppState {
     note_rows: Rc<VecModel<NoteRow>>,
     task_rows: Rc<VecModel<TaskRow>>,
     task_list_rows: Rc<VecModel<TaskListRow>>,
+    /// The board's own projection: the same tasks, filed under the lists instead
+    /// of listed under a filter. A model of models — each column carries its own
+    /// `VecModel` of cards — because that is what makes a card *move* between
+    /// columns on a drop instead of the whole board being rebuilt.
+    org_board: Rc<VecModel<BoardColumn>>,
+    /// The 笔记 tab's tag column, folded from the notes themselves.
+    org_tag_rows: Rc<VecModel<TagRow>>,
+    /// The nav column's five counts, in the smart views' own slot order. A model
+    /// rather than a plain array property because Slint reads it per frame and a
+    /// rebuild must not reallocate the list the nav is bound to.
+    org_smart_counts: Rc<VecModel<i32>>,
 }
 
 /// One decoded picture plus what it costs to keep it decoded.
@@ -893,6 +904,9 @@ impl AppState {
             note_rows: Rc::new(VecModel::from(Vec::new())),
             task_rows: Rc::new(VecModel::from(Vec::new())),
             task_list_rows: Rc::new(VecModel::from(Vec::new())),
+            org_board: Rc::new(VecModel::from(Vec::new())),
+            org_tag_rows: Rc::new(VecModel::from(Vec::new())),
+            org_smart_counts: Rc::new(VecModel::from(vec![0; 5])),
         };
         // restore persisted recents before the first open marks its page
         let state = Rc::new(state);
@@ -5026,6 +5040,30 @@ pub const MENU_TEMPLATE_PICK_BACK: i32 = 24;
 /// "Restore version" would both arrive as "…". The panel this row opens holds
 /// the list, the comparison and the restore, and says which version each is.
 pub const MENU_PAGE_VERSIONS: i32 = 25;
+
+// ─── SPEC §四十一: the organizer's task menu ────────────────────────────────
+//
+// The row's ⋯. The ids start above the page menu's own range (which stops at 25)
+// so one dispatch can tell the two apart, and the *task* travels on
+// `menu-node-id` exactly as a page id does — one mechanism, two kinds of row.
+pub const MENU_ORG_OPEN: i32 = 40;
+pub const MENU_ORG_DONE: i32 = 41;
+pub const MENU_ORG_UNDONE: i32 = 42;
+pub const MENU_ORG_TO_INBOX: i32 = 43;
+pub const MENU_ORG_DELETE: i32 = 44;
+/// A move-to row's action is this plus the target list's id. Task-list ids are
+/// row ids and the page menu's ids are all below 100, so the two ranges do not
+/// meet; the remainder *is* the list, which is why there is no second lookup.
+pub const MENU_ORG_MOVE_BASE: i32 = 1_000;
+/// The organizer's own ids stop here. The page menu's next family starts at
+/// `MOVE_TO_BASE` (100_000), so the range is closed at both ends rather than
+/// assumed to be — a bare `>= MENU_ORG_MOVE_BASE` would swallow Move-to, the
+/// colour rows and the font rows as if they named task lists.
+pub const MENU_ORG_LIMIT: i32 = 100_000;
+
+/// The board's drag payload, packed the way the block handle's and the page
+/// tree's are: Rust writes the id, and only Rust reads it back.
+pub const ORG_CARD_MIME: &str = "quire/org-card:";
 /// The picker's rows: index into `template_list()`, oldest template first.
 pub const TEMPLATE_PICK_BASE: i32 = 800_000;
 /// The "+" / slash menu's template rows, in the same index space. A separate
@@ -6823,6 +6861,15 @@ impl AppState {
     pub fn task_list_rows_model(&self) -> ModelRc<TaskListRow> {
         ModelRc::from(self.task_list_rows.clone())
     }
+    pub fn org_board_model(&self) -> ModelRc<BoardColumn> {
+        ModelRc::from(self.org_board.clone())
+    }
+    pub fn org_tag_rows_model(&self) -> ModelRc<TagRow> {
+        ModelRc::from(self.org_tag_rows.clone())
+    }
+    pub fn org_smart_counts_model(&self) -> ModelRc<i32> {
+        ModelRc::from(self.org_smart_counts.clone())
+    }
 
     /// A copy of the area's whole catalog. For the two callers that are not the
     /// projections: the scene seeder (which needs a row's id a moment after it
@@ -6844,32 +6891,229 @@ impl AppState {
     /// and not the detail would show a row that is no longer there.
     pub fn rebuild_organizer(&self) {
         let ui = self.ui.borrow().clone().and_then(|u| u.upgrade());
-        let (view, list, query, sort) = match &ui {
+        let (view, list, query, sort, show_done, tag, tab) = match &ui {
             Some(g) => (
                 g.get_org_view(),
                 g.get_org_list(),
                 g.get_org_query().to_string(),
                 g.get_org_sort(),
+                g.get_org_show_done(),
+                g.get_org_tag().to_string(),
+                g.get_org_tab(),
             ),
-            None => (SMART_ALL, -1, String::new(), 0),
+            None => (SMART_ALL, -1, String::new(), 0, false, String::new(), 1),
+        };
+        let mode = match &ui {
+            Some(g) => g.get_org_mode(),
+            None => 0,
         };
         let (note_id, task_id) = match &ui {
             Some(g) => (g.get_org_selected_note(), g.get_org_selected_task()),
             None => (-1, -1),
         };
         let dates = OrgDates::now();
-        self.note_rows
-            .set_vec(self.org_notes(&query, note_id as i64));
-        self.task_rows
-            .set_vec(self.org_tasks(view, list as i64, &query, sort, &dates, task_id as i64));
+        let notes = self.org_notes(&query, &tag, note_id as i64);
+        // The header is the *tab's* header: the notes count notes, and a board
+        // counts lists — one line reading "2 项待办" over a list of notes would
+        // be the window describing something it is not showing.
+        let header = if tab == 0 {
+            let title = if tag.is_empty() {
+                "全部笔记".to_string()
+            } else {
+                tag.clone()
+            };
+            (title, format!("{} 条笔记", notes.len()))
+        } else if mode == 1 {
+            let columns = self.org_board_rows(&query, sort, &dates);
+            let open: i32 = columns.iter().map(|c| c.count).sum();
+            (
+                "全部清单".to_string(),
+                format!("{} 个清单 · {} 项待办", columns.len(), open),
+            )
+        } else {
+            self.org_view_header(view, list as i64, &query, &dates)
+        };
+        self.note_rows.set_vec(notes);
+        self.task_rows.set_vec(self.org_tasks(
+            view,
+            list as i64,
+            &query,
+            sort,
+            &dates,
+            task_id as i64,
+            show_done,
+        ));
         self.task_list_rows.set_vec(self.org_lists(view, list as i64));
+        self.org_board
+            .set_vec(self.org_board_rows(&query, sort, &dates));
+        self.org_tag_rows.set_vec(self.org_tag_rows_of());
+        self.org_smart_counts
+            .set_vec(self.org_smart_counts_of(&query, &dates).to_vec());
+        let (view_title, view_count_label) = header;
+        let (done, total) = self.org_progress();
         if let Some(g) = ui {
             g.set_note_rows(self.note_rows_model());
             g.set_task_rows(self.task_rows_model());
             g.set_task_list_rows(self.task_list_rows_model());
+            g.set_org_board(self.org_board_model());
+            g.set_org_tag_rows(self.org_tag_rows_model());
+            g.set_org_smart_counts(self.org_smart_counts_model());
+            g.set_org_view_title(view_title.into());
+            g.set_org_view_count_label(view_count_label.into());
+            g.set_org_done_count(done);
+            g.set_org_total_count(total);
             g.set_org_note_detail(self.org_note_detail(note_id as i64));
             g.set_org_task_detail(self.org_task_detail(task_id as i64, &dates));
         }
+    }
+
+    /// The five numbers the nav column paints, in the smart views' own slot order
+    /// — so the row that says 今天 and the list that *is* 今天 cannot disagree.
+    /// Open tasks for the four views a task can be open in, and the finished ones
+    /// for 已完成, which is the one whose answer is the other half of the same
+    /// count.
+    fn org_smart_counts_of(&self, query: &str, dates: &OrgDates) -> [i32; 5] {
+        let needle = query.trim().to_lowercase();
+        let catalog = self.organizer.borrow();
+        let count = |slot: i32| -> i32 {
+            catalog
+                .tasks
+                .iter()
+                .filter(|t| {
+                    let wanted = slot == SMART_DONE;
+                    t.done == wanted
+                        && org_in_smart_view(&catalog, t, slot, dates)
+                        && org_task_matches(t, &needle)
+                })
+                .count() as i32
+        };
+        [
+            count(SMART_INBOX),
+            count(SMART_TODAY),
+            count(SMART_WEEK),
+            count(SMART_ALL),
+            count(SMART_DONE),
+        ]
+    }
+
+    /// The list header's two words, for the task half of the area: the *list*
+    /// when one is selected and the view's own name otherwise — one selector with
+    /// two halves has to read back as whichever half is showing.
+    fn org_view_header(
+        &self,
+        view: i32,
+        list: i64,
+        query: &str,
+        dates: &OrgDates,
+    ) -> (String, String) {
+        let needle = query.trim().to_lowercase();
+        let catalog = self.organizer.borrow();
+        let title = match catalog.list(ListId(list.max(0) as u64)) {
+            Some(l) if list >= 0 => l.name.clone(),
+            _ => org_view_name(view).to_string(),
+        };
+        let count = catalog
+            .tasks
+            .iter()
+            .filter(|t| {
+                let bucket = if list >= 0 {
+                    t.list.0 as i64 == list
+                } else {
+                    org_in_smart_view(&catalog, t, view, dates)
+                };
+                bucket && t.done == (view == SMART_DONE) && org_task_matches(t, &needle)
+            })
+            .count();
+        (title, format!("{count} 项待办"))
+    }
+
+    /// 已完成 X / Y over the whole area, not over the filtered view: a progress
+    /// line that moved when the user typed a search would be answering a
+    /// different question from the one it looks like it answers.
+    fn org_progress(&self) -> (i32, i32) {
+        let catalog = self.organizer.borrow();
+        let total = catalog.tasks.len() as i32;
+        let done = catalog.tasks.iter().filter(|t| t.done).count() as i32;
+        (done, total)
+    }
+
+    /// The board: the same catalog filed under the lists instead of filtered by
+    /// one. Open tasks only — a board is a "what is left" view, and the finished
+    /// ones have a column of their own in the list view.
+    fn org_board_rows(&self, query: &str, sort: i32, dates: &OrgDates) -> Vec<BoardColumn> {
+        let needle = query.trim().to_lowercase();
+        let catalog = self.organizer.borrow();
+        let mut heads: Vec<(i64, String, i32)> =
+            vec![(-1, "收集箱".to_string(), ColorKind::Default.slot())];
+        let mut lists: Vec<&TaskList> = catalog.lists.iter().collect();
+        lists.sort_by_key(|l| l.ord);
+        for l in lists {
+            heads.push((l.id.0 as i64, l.name.clone(), l.color.slot()));
+        }
+        heads
+            .into_iter()
+            .map(|(id, name, color)| {
+                let mut tasks: Vec<&Task> = catalog
+                    .tasks
+                    .iter()
+                    .filter(|t| {
+                        let bucket = if id < 0 {
+                            catalog.list(t.list).is_none()
+                        } else {
+                            t.list.0 as i64 == id
+                        };
+                        bucket && !t.done && org_task_matches(t, &needle)
+                    })
+                    .collect();
+                sort_tasks(&mut tasks, sort);
+                let cards: Vec<BoardCard> = tasks
+                    .into_iter()
+                    .map(|t| BoardCard {
+                        id: t.id.0 as i32,
+                        title: t.title.clone().into(),
+                        tag_list: tag_list_model(&t.tags),
+                        priority: t.priority.slot(),
+                        due: t.due.clone().unwrap_or_default().into(),
+                        due_label: org_due_label(t.due.as_deref(), dates).into(),
+                        overdue: org_overdue(t.due.as_deref(), dates),
+                        done: t.done,
+                        subtasks_done: 0,
+                        subtasks_total: 0,
+                    })
+                    .collect();
+                BoardColumn {
+                    id: id as i32,
+                    name: name.into(),
+                    color,
+                    count: cards.len() as i32,
+                    cards: ModelRc::from(Rc::new(VecModel::from(cards))),
+                }
+            })
+            .collect()
+    }
+
+    /// The 笔记 tab's tag column. A note's tags are free strings, so the column is
+    /// a fold of the notes rather than a table: the count is how many notes carry
+    /// the word, and there is nothing to rename or delete.
+    fn org_tag_rows_of(&self) -> Vec<TagRow> {
+        let catalog = self.organizer.borrow();
+        let mut counts: BTreeMap<String, i32> = BTreeMap::new();
+        for note in catalog.notes.iter() {
+            for tag in note.tags.iter() {
+                *counts.entry(tag.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut rows: Vec<TagRow> = counts
+            .into_iter()
+            .map(|(name, count)| TagRow {
+                name: name.into(),
+                count,
+            })
+            .collect();
+        // most-used first, then by name: a tag column is read by "what do I keep
+        // writing about", not alphabetically
+        rows.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+        rows
     }
 
     /// One note as its row. `excerpt` is the body's first non-empty line, which
@@ -6894,13 +7138,14 @@ impl AppState {
         }
     }
 
-    fn org_notes(&self, query: &str, selected: i64) -> Vec<NoteRow> {
+    fn org_notes(&self, query: &str, tag: &str, selected: i64) -> Vec<NoteRow> {
         let needle = query.trim().to_lowercase();
         let catalog = self.organizer.borrow();
         let mut notes: Vec<&Note> = catalog
             .notes
             .iter()
             .filter(|n| org_note_matches(n, &needle))
+            .filter(|n| tag.is_empty() || n.tags.iter().any(|t| t == tag))
             .collect();
         // Pinned first, then most recently edited: the order a quick-note list
         // is read in, and the one every note app opens on.
@@ -6966,6 +7211,7 @@ impl AppState {
         rows
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn org_tasks(
         &self,
         view: i32,
@@ -6974,9 +7220,15 @@ impl AppState {
         sort: i32,
         dates: &OrgDates,
         selected: i64,
+        show_done: bool,
     ) -> Vec<TaskRow> {
         let needle = query.trim().to_lowercase();
         let catalog = self.organizer.borrow();
+        // 已完成 is the one view whose answer *is* the finished ones; everywhere
+        // else they are hidden until the footer's switch says otherwise, which is
+        // why this is one filter here rather than a `done` clause inside every
+        // smart view's predicate.
+        let keep_done = show_done || view == SMART_DONE;
         let mut tasks: Vec<&Task> = catalog
             .tasks
             .iter()
@@ -6987,30 +7239,11 @@ impl AppState {
                     l if l >= 0 => t.list.0 as i64 == l,
                     _ => org_in_smart_view(&catalog, t, view, dates),
                 };
-                bucket && org_task_matches(t, &needle)
+                let finished = if view == SMART_DONE { t.done } else { !t.done || keep_done };
+                bucket && finished && org_task_matches(t, &needle)
             })
             .collect();
-        match sort {
-            SORT_PRIORITY => tasks.sort_by(|a, b| {
-                b.priority
-                    .slot()
-                    .cmp(&a.priority.slot())
-                    .then(a.due.cmp(&b.due))
-                    .then(a.ord.cmp(&b.ord))
-            }),
-            SORT_DUE => tasks.sort_by(|a, b| {
-                a.due
-                    .is_none()
-                    .cmp(&b.due.is_none())
-                    .then(a.due.cmp(&b.due))
-                    .then(a.ord.cmp(&b.ord))
-            }),
-            // Any other slot — including 0, the default — is the order they
-            // were added: `ord` is this area's own reading order, and the two
-            // sorts above are questions asked *of* it rather than replacements
-            // for it.
-            _ => tasks.sort_by_key(|t| (t.list, t.ord)),
-        }
+        sort_tasks(&mut tasks, sort);
         tasks
             .into_iter()
             .map(|t| org_task_row(&catalog, t, dates, t.id.0 as i64 == selected))
@@ -7222,6 +7455,71 @@ impl AppState {
     pub fn org_task_list(&self, id: i64, list: i64) -> Option<Vec<Change>> {
         let list = if list >= 0 { ListId(list as u64) } else { ListId::INBOX };
         self.org_edit_task(id, |t| t.list = list)
+    }
+
+    // ---- the row's ⋯ menu, and the board's drag ----
+
+    /// Fill the shared context menu with one task's rows. The *task* travels on
+    /// `menu-node-id`, which the controller sets; what this function adds is the
+    /// move-to list, built from the lists that actually exist — a move to the
+    /// list the task is already in would be a row that does nothing.
+    pub fn fill_org_task_menu(&self, task: i32) {
+        let row = |id: i32, label: &str, icon: &str, danger: bool| MenuRow {
+            id,
+            label: label.into(),
+            icon: icon.into(),
+            danger,
+            swatch: -1,
+            swatch_bg: false,
+            check: false,
+        };
+        let catalog = self.organizer.borrow();
+        let Some(current) = catalog.task(TaskId(task.max(0) as u64)).cloned() else {
+            self.menu.set_vec(Vec::new());
+            return;
+        };
+        let mut rows = vec![row(MENU_ORG_OPEN, "打开详情", "page", false)];
+        rows.push(if current.done {
+            row(MENU_ORG_UNDONE, "标记为未完成", "todo-check", false)
+        } else {
+            row(MENU_ORG_DONE, "标记为已完成", "todo-check", false)
+        });
+        if catalog.list(current.list).is_some() {
+            rows.push(row(MENU_ORG_TO_INBOX, "移到收集箱", "arrow-right", false));
+        }
+        let mut lists: Vec<&TaskList> = catalog.lists.iter().collect();
+        lists.sort_by_key(|l| l.ord);
+        for list in lists {
+            if list.id == current.list {
+                continue;
+            }
+            rows.push(row(
+                MENU_ORG_MOVE_BASE + list.id.0 as i32,
+                &format!("移到「{}」", list.name),
+                "arrow-right",
+                false,
+            ));
+        }
+        rows.push(row(MENU_ORG_DELETE, "删除任务", "trash", true));
+        self.menu.set_vec(rows);
+    }
+
+    /// The list column's quick-add line, and a board column's ＋ line: one write,
+    /// and the row it makes is already titled — a blank row nobody asked for is
+    /// not a step the undo stack should hold.
+    pub fn org_quick_add(&self, view: i32, list: i64, title: String, today: &str) -> Option<i64> {
+        let title = title.trim();
+        if title.is_empty() {
+            return None;
+        }
+        let id = self.org_create_task(list)?;
+        self.org_task_title(id, title.to_string());
+        // 今天 is a *date* view: a task typed into it is due today, which is the
+        // only reading of "today" that survives the next rebuild.
+        if view == SMART_TODAY {
+            self.org_task_due(id, today.to_string());
+        }
+        Some(id)
     }
 
     pub fn org_delete_task(&self, id: i64) -> Option<String> {
@@ -13518,6 +13816,10 @@ impl OrgDates {
 /// merge leaves behind when it lands a list's deletion while a task that pointed
 /// at it stays local (`org_absorb`). One comparison answers both, and neither
 /// task is lost.
+///
+/// `done` is deliberately **not** part of 今天 or 近七天. Whether a finished task
+/// is painted is one question, asked once (the list's footer switch), and folding
+/// it into a view's predicate would mean the switch could not turn it back on.
 fn org_in_smart_view(
     catalog: &OrganizerCatalog,
     task: &Task,
@@ -13527,16 +13829,63 @@ fn org_in_smart_view(
     let due = task.due.as_deref();
     match view {
         SMART_INBOX => catalog.list(task.list).is_none(),
-        SMART_TODAY => !task.done && due == Some(dates.today.as_str()),
+        SMART_TODAY => due == Some(dates.today.as_str()),
         SMART_WEEK => {
-            !task.done
-                && matches!(due, Some(d) if d > dates.today.as_str() && d <= dates.week.as_str())
+            matches!(due, Some(d) if d > dates.today.as_str() && d <= dates.week.as_str())
         }
         SMART_DONE => task.done,
         // SMART_ALL, and any slot a future build writes: everything. A view this
         // build does not know must show the rows rather than none of them.
         _ => true,
     }
+}
+
+/// The three sorts, in one place because the list and the board share them: a
+/// column's cards and the list's rows have to answer "which is next" identically,
+/// or a task would sit in a different position depending on which view asked.
+fn sort_tasks(tasks: &mut [&Task], sort: i32) {
+    match sort {
+        SORT_PRIORITY => tasks.sort_by(|a, b| {
+            b.priority
+                .slot()
+                .cmp(&a.priority.slot())
+                .then(a.due.cmp(&b.due))
+                .then(a.ord.cmp(&b.ord))
+        }),
+        SORT_DUE => tasks.sort_by(|a, b| {
+            a.due
+                .is_none()
+                .cmp(&b.due.is_none())
+                .then(a.due.cmp(&b.due))
+                .then(a.ord.cmp(&b.ord))
+        }),
+        // Any other slot — including 0, the default — is the order they were
+        // added: `ord` is this area's own reading order, and the two sorts above
+        // are questions asked *of* it rather than replacements for it.
+        _ => tasks.sort_by_key(|t| (t.list, t.ord)),
+    }
+}
+
+/// A row's tags as one pill per tag, for the delegates that draw a pill and not a
+/// joined string. Rust does the split because a delegate does no string work in
+/// this codebase.
+fn tag_list_model(tags: &[String]) -> ModelRc<slint::SharedString> {
+    ModelRc::from(Rc::new(VecModel::from(
+        tags.iter()
+            .map(|t| slint::SharedString::from(t.as_str()))
+            .collect::<Vec<_>>(),
+    )))
+}
+
+/// The smart views' own names, in their slot order. Rust paints the header and
+/// `OrganizerArea.slint` paints the nav, and both have to say 收集箱 about slot 0.
+const SMART_NAMES: [&str; 5] = ["收集箱", "今天", "最近 7 天", "全部", "已完成"];
+
+fn org_view_name(view: i32) -> &'static str {
+    SMART_NAMES
+        .get(view.max(0) as usize)
+        .copied()
+        .unwrap_or("收集箱")
 }
 
 /// One task as its row. A free function taking the catalog rather than a method
@@ -13570,6 +13919,7 @@ fn org_task_row(
         list_name: list_name.into(),
         list_color,
         tags: tags_text(&task.tags).into(),
+        tag_list: tag_list_model(&task.tags),
         notes: task.notes.clone().into(),
         repeat: task.repeat.slot(),
         subtasks: ModelRc::from(Rc::new(VecModel::from(
@@ -19585,41 +19935,53 @@ mod tests {
         // the projections directly, which is what the delegate's model is built
         // from.
         let dates = super::OrgDates::now();
-        let view = |v: i32, l: i64, sort: i32| state.org_tasks(v, l, "", sort, &dates, -1);
+        // `show_done` is the list's footer switch: true everywhere the old
+        // assertions asked for "everything", which is what they meant — the
+        // finished ones used to be folded into the view predicates, and are now
+        // one switch the projection applies once.
+        let view =
+            |v: i32, l: i64, sort: i32, show: bool| state.org_tasks(v, l, "", sort, &dates, -1, show);
+        let all = |v: i32, l: i64, sort: i32| view(v, l, sort, true);
+        let open = |v: i32, l: i64, sort: i32| view(v, l, sort, false);
         state.rebuild_organizer();
-        assert_eq!(state.task_rows.row_count(), 7, "the headless default is 全部");
+        assert_eq!(state.task_rows.row_count(), 6, "the headless default is 全部, open only");
 
         // 收集箱: the six tasks whose list names no stored list, and not the one
         // filed in 工作
-        let inbox: Vec<String> = view(0, -1, 0).iter().map(|r| r.title.to_string()).collect();
+        let inbox: Vec<String> = all(0, -1, 0).iter().map(|r| r.title.to_string()).collect();
         assert_eq!(inbox.len(), 6, "{inbox:?}");
         assert!(!inbox.contains(&"清单里的".to_string()));
+        // and the switch is what hides the finished one: the same view without it
+        assert_eq!(open(0, -1, 0).len(), 5);
 
         // 今天: the one dated today, and not the finished one
-        let today_rows = view(1, -1, 0);
+        let today_rows = all(1, -1, 0);
         assert_eq!(today_rows.len(), 1, "{:?}", today_rows.len());
         assert_eq!(today_rows[0].due, today);
         assert!(!today_rows[0].overdue);
 
         // 近七天: today's excluded, the overdue one excluded, the +5 one in
-        let week_rows = view(2, -1, 0);
+        let week_rows = all(2, -1, 0);
         assert_eq!(week_rows.len(), 1);
         assert_eq!(week_rows[0].title, "下周");
 
         // 全部: everything, including the far-future and the finished ones
-        assert_eq!(view(3, -1, 0).len(), 7);
+        assert_eq!(all(3, -1, 0).len(), 7);
+        assert_eq!(open(3, -1, 0).len(), 6, "the finished one is the difference");
         // 已完成
-        let done_rows = view(4, -1, 0);
+        let done_rows = all(4, -1, 0);
         assert_eq!(done_rows.len(), 1);
         assert_eq!(done_rows[0].title, "做完了");
+        // and 已完成 ignores the switch: it *is* the question the switch would ask
+        assert_eq!(open(4, -1, 0).len(), 1);
 
         // a stored list is the *other* half of the same selector, and the overdue
         // flag is a property of the row rather than of the view it is read in
-        let listed_rows = view(0, list, 0);
+        let listed_rows = all(0, list, 0);
         assert_eq!(listed_rows.len(), 1);
         assert_eq!(listed_rows[0].title, "清单里的");
         assert_eq!(listed_rows[0].list_name, "工作");
-        let inbox_rows = view(0, -1, 0);
+        let inbox_rows = all(0, -1, 0);
         let overdue_row = inbox_rows
             .iter()
             .find(|r| r.title == "已经逾期")
@@ -19633,7 +19995,7 @@ mod tests {
 
         // sorting by 截止日期 puts the dated rows first, in order, and the
         // undated ones last
-        let sorted = view(0, -1, 2);
+        let sorted = all(0, -1, 2);
         let dated: Vec<String> = sorted
             .iter()
             .take_while(|r| !r.due.is_empty())
@@ -19648,10 +20010,15 @@ mod tests {
         let note = state.org_create_note().unwrap();
         state.org_note_title(note, "会议记录".into());
         state.org_note_body(note, "关于同步".into());
-        let found = state.org_notes("同步", -1);
+        state.org_note_tags(note, "会议, 核心".into());
+        let found = state.org_notes("同步", "", -1);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, note as i32);
-        assert_eq!(state.org_notes("这个词不存在", -1).len(), 0);
+        assert_eq!(state.org_notes("这个词不存在", "", -1).len(), 0);
+        // the tag column's filter is the other needle: a note is found by a tag
+        // it carries, and only by that tag
+        assert_eq!(state.org_notes("", "会议", -1).len(), 1);
+        assert_eq!(state.org_notes("", "不存在的标签", -1).len(), 0);
         // and the chip row's own counts, which the inbox one folds a dangling
         // list into
         let lists = state.org_lists(0, -1);
